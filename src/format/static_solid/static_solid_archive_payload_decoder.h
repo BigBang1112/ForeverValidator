@@ -1,0 +1,5 @@
+#ifndef TMNF_STATIC_SOLID_ARCHIVE_PAYLOAD_DECODER_H
+#define TMNF_STATIC_SOLID_ARCHIVE_PAYLOAD_DECODER_H
+
+#include "format/static_solid/static_solid_archive_payload_stream.h"
+#endif
