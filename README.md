@@ -126,3 +126,7 @@ src/engine                reconstructed game physics and scene code
 src/format                replay, GBX, pack, tuning, and solid decoding
 src/platform/native       native filesystem and process integration
 ```
+
+## Development Notes & Acknowledgements
+
+A significant portion of the tedious work (like mapping out the complex data structures and boilerplate code) was accelerated using LLMs. Think of it as a heavily assisted solo project.
