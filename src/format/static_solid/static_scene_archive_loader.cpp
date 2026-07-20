@@ -4,6 +4,7 @@
 // the decoded archive graph used to build typed scene assets.
 
 #include "engine/game/game_ctn_decoration.h"
+#include "engine/scene/replay_scene_placements.h"
 #include <algorithm>
 #include <stddef.h>
 #include <stdlib.h>
@@ -164,7 +165,7 @@ AcceptsPackFileDescriptor(
         const CPlugFileFidContainer_SFileDesc &file,
         const char *plainPath) {
     return (file.classId == TMNF_CLASS_CPlugSolid &&
-            SceneDescriptorFolderPaths::IsStadiumMediaSolidPath(plainPath)) ||
+            SceneDescriptorFolderPaths::IsMediaSolidPath(plainPath)) ||
            file.classId == TMNF_CLASS_CPlugSurface ||
            file.classId == TMNF_CLASS_CPlugDecoratorSolid ||
            file.classId == TMNF_CLASS_CScene3d ||
@@ -349,6 +350,7 @@ int StaticSolidArchivePayload::BuildFromInventory(
     *this = StaticSolidArchivePayload{};
     descriptorIndex = descriptorAsset.descriptorIndex;
     loaderArgument = descriptorAsset.loaderArgument;
+    descriptorClassId = descriptorAsset.descriptorClassId;
     payloadOffsetRel = descriptorAsset.PackPayloadOffset();
     payloadOffsetAbs = packDataStart + descriptorAsset.PackPayloadOffset();
     sourceByteCount = descriptorAsset.IsEncrypted()
@@ -378,6 +380,7 @@ int StaticSolidArchivePayload::BuildEncryptedPackFilePayload(
     *this = StaticSolidArchivePayload{};
     descriptorIndex = request.descriptorIndex;
     loaderArgument = request.loaderArgument;
+    descriptorClassId = file.classId;
     payloadOffsetRel = file.offsetRel;
     payloadOffsetAbs = request.packDataStart + file.offsetRel;
     sourceByteCount = encryptedByteCount + 8u;
@@ -406,6 +409,10 @@ const char *StaticSolidArchivePayload::PlainPackPath() const {
 const char *StaticSolidArchivePayload::SelectedDescriptorPath()
         const {
     return descriptorRef.SelectedDescriptorPath();
+}
+
+u32 StaticSolidArchivePayload::DescriptorClassId() const {
+    return descriptorClassId;
 }
 
 int StaticSolidArchivePayload::IsEncrypted() const {
@@ -567,8 +574,9 @@ int StaticSolidArchiveLoadSession::DecodeDescriptorDependency(
     StaticSolidArchivePayload payloadAsset;
     return BuildPayloadAssetFromDescriptor(*descriptorAsset, &payloadAsset) &&
            DecodeAndAppendArchive(payloadAsset,
-                                          archiveModels,
-                                          dependencyQueue);
+                                  archiveModels,
+                                  dependencyQueue,
+                                  dependency.IsRequired());
 }
 
 int StaticSolidArchiveLoadSession::InstallPackSource(
@@ -679,14 +687,29 @@ int StaticSolidArchiveLoadSession::AppendDecodedPayload(
 }
 
 StaticSolidArchiveRollback
-StaticSolidArchiveLoadSession::MarkDecodedArchiveTail() const {
+StaticSolidArchiveLoadSession::MarkDecodedArchiveTail(
+        const CGameCtnReplayArchiveStaticModelCollection *archiveModels) const {
     StaticSolidArchiveRollback mark;
     mark.archiveGraphMark = archiveGraph.MarkRollback();
+    if (archiveModels != nullptr) {
+        mark.archiveModelCount = archiveModels->Count();
+    }
     return mark;
 }
 
 int StaticSolidArchiveLoadSession::RestoreDecodedArchiveTail(
-        const StaticSolidArchiveRollback &mark) {
+        const StaticSolidArchiveRollback &mark,
+        CGameCtnReplayArchiveStaticModelCollection *archiveModels) {
+    if (!archiveGraph.CanRestoreRollback(mark.archiveGraphMark) ||
+        mark.archiveModelCount.has_value() != (archiveModels != nullptr) ||
+        (archiveModels != nullptr &&
+         *mark.archiveModelCount > archiveModels->Count())) {
+        return 0;
+    }
+    if (archiveModels != nullptr &&
+        !archiveModels->ResizePrefix(*mark.archiveModelCount)) {
+        return 0;
+    }
     return archiveGraph.RestoreRollback(mark.archiveGraphMark);
 }
 
@@ -724,14 +747,39 @@ StaticSolidArchiveLoadSession::LoadReplayArchives(
                               *this)) {
         return result;
     }
+    std::optional<CatalogDecorationSizeDefinition> decorationSize;
+    if (request.role != ReplayStaticArchiveRole::Map) {
+        decorationSize = request.installedPackAssets.DecorationSize(
+                request.mapInput);
+        if (!decorationSize) {
+            return failWithStoreReset();
+        }
+    }
 
     CGameCtnReplayStaticSolidDescriptorDependencyQueue dependencyQueue;
-    if (!dependencyQueue.SeedFromReplayStaticInputs(
+    int seeded = 0;
+    switch (request.role) {
+    case ReplayStaticArchiveRole::Complete:
+        seeded = dependencyQueue.SeedFromReplayStaticInputs(
                 &request.mapInput,
                 &request.placements,
                 &request.archiveModels,
                 &inventory,
-                solidReferences) ||
+                solidReferences,
+                &*decorationSize);
+        break;
+    case ReplayStaticArchiveRole::Map:
+        seeded = dependencyQueue.SeedFromReplayMapStaticInputs(
+                &request.placements,
+                &request.archiveModels,
+                solidReferences);
+        break;
+    case ReplayStaticArchiveRole::Decoration:
+        seeded = dependencyQueue.SeedFromReplayDecorationStaticInputs(
+                &inventory, &*decorationSize);
+        break;
+    }
+    if (!seeded ||
         !dependencyQueue.DecodeReachablePayloadGraph(
                 &inventory,
                 this,
@@ -754,7 +802,8 @@ int StaticSceneArchiveLoad::Build(
     if (InstalledPackAssetRepositoryAccess::Pack(installedPackAssets) == nullptr ||
         !LoadCatalogArchiveStaticModels(
                 installedPackAssets,
-                archiveModels)) {
+                archiveModels,
+                CatalogArchiveStaticModelUsage::DependencyOnly)) {
         return 0;
     }
 
@@ -763,7 +812,8 @@ int StaticSceneArchiveLoad::Build(
                     installedPackAssets,
                     mapInput,
                     placements,
-                    archiveModels});
+                    archiveModels,
+                    ReplayStaticArchiveRole::Complete});
     selectedMissing = archiveResult.selectedMissing;
     if (!archiveResult.loaded) {
         return 0;
@@ -774,6 +824,92 @@ int StaticSceneArchiveLoad::Build(
                                        placements,
                                        sceneModels);
 }
+
+int StaticSceneArchiveLoad::BuildMap(
+        InstalledPackAssetRepository &installedPackAssets,
+        const CGameCtnReplayMapInput &mapInput,
+        const ReplaySceneBlockPlacements &placements) {
+    Free();
+    if (InstalledPackAssetRepositoryAccess::Pack(installedPackAssets) ==
+                nullptr ||
+        !LoadCatalogArchiveStaticModels(
+                installedPackAssets,
+                archiveModels,
+                CatalogArchiveStaticModelUsage::SceneModel)) {
+        return 0;
+    }
+    const StaticSolidArchiveLoadSession::ReplayArchiveResult archiveResult =
+            archive.LoadReplayArchives({
+                    installedPackAssets,
+                    mapInput,
+                    placements,
+                    archiveModels,
+                    ReplayStaticArchiveRole::Map});
+    selectedMissing = archiveResult.selectedMissing;
+    if (!archiveResult.loaded) {
+        return 0;
+    }
+    return selectedMissing != 0u ||
+           BuildStaticSceneFromArchive(archive,
+                                       archiveModels,
+                                       placements,
+                                       sceneModels);
+}
+
+int StaticSceneArchiveLoad::BuildDecoration(
+        InstalledPackAssetRepository &installedPackAssets,
+        const CGameCtnReplayMapInput &mapInput) {
+    Free();
+    ReplaySceneBlockPlacements placements;
+    const StaticSolidArchiveLoadSession::ReplayArchiveResult archiveResult =
+            archive.LoadReplayArchives({
+                    installedPackAssets,
+                    mapInput,
+                    placements,
+                    archiveModels,
+                    ReplayStaticArchiveRole::Decoration});
+    selectedMissing = archiveResult.selectedMissing;
+    if (!archiveResult.loaded) {
+        return 0;
+    }
+    return selectedMissing != 0u ||
+           BuildStaticSceneFromArchive(archive,
+                                       archiveModels,
+                                       placements,
+                                       sceneModels);
+}
+
+namespace {
+
+bool MergeRoutedStaticSceneModels(
+        const StaticSceneModelCollection &decorationModels,
+        const StaticSceneModelCollection &mapModels,
+        StaticSceneModelCollection *out) {
+    if (out == nullptr || !decorationModels.IsComplete() ||
+        !mapModels.IsComplete()) {
+        return false;
+    }
+    out->Clear();
+    if (!out->Reserve(decorationModels.Models().size() +
+                      mapModels.Models().size())) {
+        return false;
+    }
+    for (const StaticSceneModel &model : decorationModels.Models()) {
+        if (!out->Add(model)) {
+            out->Clear();
+            return false;
+        }
+    }
+    for (const StaticSceneModel &model : mapModels.Models()) {
+        if (!out->Add(model)) {
+            out->Clear();
+            return false;
+        }
+    }
+    return true;
+}
+
+}  // namespace
 
 bool InstalledPackAssetRepository::BuildStaticScene(
         const CGameCtnReplayMapInput &mapInput,
@@ -788,5 +924,47 @@ bool InstalledPackAssetRepository::BuildStaticScene(
         return false;
     }
     *out = std::move(load.sceneModels);
+    return true;
+}
+
+bool InstalledPackAssetRepository::BuildStaticSceneWithDecorationAssets(
+        ReplayAssetRepository &decorationAssets,
+        const CGameCtnReplayMapInput &mapInput,
+        const ReplaySceneBlockPlacements &placements,
+        StaticSceneModelCollection *out) {
+    if (&decorationAssets == this) {
+        return BuildStaticScene(mapInput, placements, out);
+    }
+    auto *installedDecorationAssets =
+            dynamic_cast<InstalledPackAssetRepository *>(
+                    &decorationAssets);
+    if (out == nullptr || installedDecorationAssets == nullptr) {
+        return false;
+    }
+    const CPlugFilePack *mapPack =
+            InstalledPackAssetRepositoryAccess::Pack(*this);
+    const CPlugFilePack *decorationPack =
+            InstalledPackAssetRepositoryAccess::Pack(
+                    *installedDecorationAssets);
+    if (mapPack == nullptr || decorationPack == nullptr) {
+        return false;
+    }
+    if (mapPack->PackName() == decorationPack->PackName()) {
+        return BuildStaticScene(mapInput, placements, out);
+    }
+
+    StaticSceneArchiveLoad mapLoad;
+    StaticSceneArchiveLoad decorationLoad;
+    if (!mapLoad.BuildMap(*this, mapInput, placements) ||
+        mapLoad.selectedMissing != 0u ||
+        !decorationLoad.BuildDecoration(
+                *installedDecorationAssets, mapInput) ||
+        decorationLoad.selectedMissing != 0u ||
+        !MergeRoutedStaticSceneModels(decorationLoad.sceneModels,
+                                      mapLoad.sceneModels,
+                                      out)) {
+        out->Clear();
+        return false;
+    }
     return true;
 }

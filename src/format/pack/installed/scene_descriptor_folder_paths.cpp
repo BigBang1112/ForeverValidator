@@ -24,6 +24,56 @@ static int scene_descriptor_prefix_matches(const char *text,
     return 1;
 }
 
+static const char *scene_descriptor_find_text(const char *text,
+                                              const char *needle) {
+    if (text == nullptr || needle == nullptr || *needle == '\0') {
+        return nullptr;
+    }
+    const size_t textLen = scene_descriptor_cstr_length(text);
+    const size_t needleLen = scene_descriptor_cstr_length(needle);
+    if (needleLen > textLen) {
+        return nullptr;
+    }
+    for (size_t offset = 0u; offset + needleLen <= textLen; ++offset) {
+        if (scene_descriptor_prefix_matches(text + offset, needle, needleLen)) {
+            return text + offset;
+        }
+    }
+    return nullptr;
+}
+
+static int scene_descriptor_copy_prefix(const char *text,
+                                        size_t prefixLen,
+                                        char *out,
+                                        size_t outSize) {
+    if (text == nullptr || out == nullptr || prefixLen >= outSize) {
+        return 0;
+    }
+    for (size_t index = 0u; index < prefixLen; ++index) {
+        out[index] = text[index];
+    }
+    out[prefixLen] = '\0';
+    return 1;
+}
+
+static int scene_descriptor_hash_after_directory(
+        const char *plainPath,
+        const char *directory,
+        char *out,
+        size_t outSize) {
+    const char *marker = scene_descriptor_find_text(plainPath, directory);
+    if (marker == nullptr || marker == plainPath) {
+        return 0;
+    }
+    const size_t baseLen = static_cast<size_t>(marker - plainPath) +
+                           scene_descriptor_cstr_length(directory);
+    char base[512];
+    return scene_descriptor_copy_prefix(
+                   plainPath, baseLen, base, sizeof(base)) &&
+           SceneDescriptorFolderPaths::HashFileNameDescriptorPathWithBase(
+                   plainPath, base, out, outSize);
+}
+
 static char scene_descriptor_low_high_hex_nibble(unsigned int value) {
     value &= 0x0fu;
     return (char)(value < 10u ? ('0' + value) : ('A' + value - 10u));
@@ -54,13 +104,31 @@ int SceneDescriptorFolderPaths::StartsWith(const char *text,
     if (text == nullptr || prefix == nullptr) {
         return 0;
     }
+    const size_t textLen = scene_descriptor_cstr_length(text);
     const size_t prefixLen = scene_descriptor_cstr_length(prefix);
-    return scene_descriptor_prefix_matches(text, prefix, prefixLen);
+    return prefixLen <= textLen &&
+           scene_descriptor_prefix_matches(text, prefix, prefixLen);
 }
 
 int SceneDescriptorFolderPaths::IsConstructionBlockInfoPath(
         const char *plainPath) {
     return StartsWith(plainPath, ConstructionBlockInfoPrefix());
+}
+
+int SceneDescriptorFolderPaths::IsBlockInfoDescriptorPath(
+        const char *plainPath) {
+    return scene_descriptor_find_text(
+                   plainPath, "\\ConstructionBlockInfo\\") != nullptr ||
+           scene_descriptor_find_text(
+                   plainPath, "\\TrackManiaElementDesc\\") != nullptr;
+}
+
+int SceneDescriptorFolderPaths::IsZoneDescriptorPath(
+        const char *plainPath) {
+    return scene_descriptor_find_text(
+                   plainPath, "\\ConstructionZone\\") != nullptr ||
+           scene_descriptor_find_text(
+                   plainPath, "\\TrackManiaZone\\") != nullptr;
 }
 
 int SceneDescriptorFolderPaths::IsStadiumMobilPath(const char *plainPath) {
@@ -73,7 +141,30 @@ int SceneDescriptorFolderPaths::IsRacesMobilPath(const char *plainPath) {
 
 int SceneDescriptorFolderPaths::IsMobilDescriptorPath(
         const char *plainPath) {
-    return IsStadiumMobilPath(plainPath) || IsRacesMobilPath(plainPath);
+    return scene_descriptor_find_text(plainPath, "\\Mobil\\") != nullptr;
+}
+
+int SceneDescriptorFolderPaths::IsMediaSolidPath(const char *plainPath) {
+    return scene_descriptor_find_text(
+                   plainPath, "\\Media\\Solid\\") != nullptr;
+}
+
+int SceneDescriptorFolderPaths::IsMediaMaterialPath(
+        const char *plainPath) {
+    return scene_descriptor_find_text(
+                   plainPath, "\\Media\\Material\\") != nullptr;
+}
+
+int SceneDescriptorFolderPaths::IsMediaShaderPath(
+        const char *plainPath) {
+    return scene_descriptor_find_text(
+                   plainPath, "\\Media\\Shader\\") != nullptr;
+}
+
+int SceneDescriptorFolderPaths::IsMediaTexturePath(
+        const char *plainPath) {
+    return scene_descriptor_find_text(
+                   plainPath, "\\Media\\Texture\\") != nullptr;
 }
 
 int SceneDescriptorFolderPaths::IsStadiumMediaSolidPath(
@@ -181,22 +272,70 @@ int SceneDescriptorFolderPaths::HashStadiumMediaMaterialPath(
             outSize);
 }
 
+int SceneDescriptorFolderPaths::HashMediaSolidPath(
+        const char *plainPath,
+        char *out,
+        size_t outSize) {
+    return scene_descriptor_hash_after_directory(
+            plainPath, "\\Media\\Solid\\", out, outSize);
+}
+
+int SceneDescriptorFolderPaths::HashMediaMaterialPath(
+        const char *plainPath,
+        char *out,
+        size_t outSize) {
+    return scene_descriptor_hash_after_directory(
+            plainPath, "\\Media\\Material\\", out, outSize);
+}
+
+int SceneDescriptorFolderPaths::HashMediaShaderPath(
+        const char *plainPath,
+        char *out,
+        size_t outSize) {
+    return scene_descriptor_hash_after_directory(
+            plainPath, "\\Media\\Shader\\", out, outSize);
+}
+
+int SceneDescriptorFolderPaths::HashMediaTexturePath(
+        const char *plainPath,
+        char *out,
+        size_t outSize) {
+    return scene_descriptor_hash_after_directory(
+            plainPath, "\\Media\\Texture\\", out, outSize);
+}
+
 int SceneDescriptorFolderPaths::HashMobilDescriptorPath(
         const char *plainPath,
         char *out,
         size_t outSize) {
-    const char *base = nullptr;
-    return FindMobilDescriptorHashBase(plainPath, &base) &&
-           HashFileNameDescriptorPathWithBase(plainPath, base, out, outSize);
+    return scene_descriptor_hash_after_directory(
+            plainPath, "\\Mobil\\", out, outSize);
 }
 
 int SceneDescriptorFolderPaths::HashPackSelectedPath(
         const char *plainPath,
         char *out,
         size_t outSize) {
-    const char *base = nullptr;
-    return FindPackSelectedPathHashBase(plainPath, &base) &&
-           HashFileNameDescriptorPathWithBase(plainPath, base, out, outSize);
+    if (HashMediaSolidPath(plainPath, out, outSize) ||
+        HashMediaMaterialPath(plainPath, out, outSize) ||
+        HashMediaShaderPath(plainPath, out, outSize) ||
+        HashMediaTexturePath(plainPath, out, outSize) ||
+        HashMobilDescriptorPath(plainPath, out, outSize)) {
+        return 1;
+    }
+    if (plainPath == nullptr) {
+        return 0;
+    }
+    const char *slash = scene_descriptor_find_text(plainPath, "\\");
+    if (slash == nullptr || slash == plainPath) {
+        return 0;
+    }
+    char base[512];
+    const size_t baseLen = static_cast<size_t>(slash - plainPath) + 1u;
+    return scene_descriptor_copy_prefix(
+                   plainPath, baseLen, base, sizeof(base)) &&
+           HashFileNameDescriptorPathWithBase(
+                   plainPath, base, out, outSize);
 }
 
 int SceneDescriptorFolderPaths::FindMobilDescriptorHashBase(
@@ -310,6 +449,15 @@ int SceneDescriptorFolderPaths::BuildPackRefFullPath(
         const char *name,
         char *out,
         size_t outSize) {
+    return BuildPackRefFullPath(folder, name, "Stadium", out, outSize);
+}
+
+int SceneDescriptorFolderPaths::BuildPackRefFullPath(
+        const char *folder,
+        const char *name,
+        const char *packRoot,
+        char *out,
+        size_t outSize) {
     if (folder == nullptr || name == nullptr || out == nullptr || outSize == 0u) {
         return 0;
     }
@@ -319,8 +467,12 @@ int SceneDescriptorFolderPaths::BuildPackRefFullPath(
         StartsWith(folder, "ConstructionZone\\") ||
         StartsWith(folder, "DecoSolid\\") ||
         StartsWith(folder, "Media\\") ||
-        StartsWith(folder, "Mobil\\")) {
-        if (!AppendCString(out, outSize, "Stadium\\")) {
+        StartsWith(folder, "Mobil\\") ||
+        StartsWith(folder, "TrackManiaElementDesc\\") ||
+        StartsWith(folder, "TrackManiaZone\\")) {
+        if (packRoot == nullptr || *packRoot == '\0' ||
+            !AppendCString(out, outSize, packRoot) ||
+            !AppendCString(out, outSize, "\\")) {
             return 0;
         }
     }

@@ -144,6 +144,7 @@ class CSceneVehicle : public CSceneMobil {
     virtual void VehicleIsNetworkedSet(int isNetworked);
     float VehicleStateComputeBlendVal(void);
     void SetSolid(CPlugSolid *solid) override;
+    void OnEnterScene(void) override;
     void VehicleReset(void) override;
     virtual void VehicleInitFromSolid(void);
     virtual void VehicleUpdateAsync(void);

@@ -1,3 +1,4 @@
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -43,11 +44,42 @@ struct ReplayControlState {
     s32 brakeTime = 0;
     s32 gasTime = 0;
     double gasValue = 0.0;
+    std::array<u32,
+               static_cast<std::size_t>(ReplayStuntInputAction::Count)>
+            stuntInputLastChangeTimeMs{};
 };
+
+std::optional<std::size_t> StuntInputIndex(
+        ReplayInputActionKind action) {
+    switch (action) {
+    case ReplayInputActionKind::SteerLeft:
+        return static_cast<std::size_t>(
+                ReplayStuntInputAction::SteerLeft);
+    case ReplayInputActionKind::SteerRight:
+        return static_cast<std::size_t>(
+                ReplayStuntInputAction::SteerRight);
+    case ReplayInputActionKind::Steer:
+        return static_cast<std::size_t>(ReplayStuntInputAction::Steer);
+    case ReplayInputActionKind::Accelerate:
+        return static_cast<std::size_t>(
+                ReplayStuntInputAction::Accelerate);
+    case ReplayInputActionKind::Brake:
+        return static_cast<std::size_t>(ReplayStuntInputAction::Brake);
+    case ReplayInputActionKind::Gas:
+        return static_cast<std::size_t>(ReplayStuntInputAction::Gas);
+    default:
+        return std::nullopt;
+    }
+}
 
 void ApplyEvent(ReplayControlState &state, const ReplayInputEvent &event) {
     const bool active = event.value.IsActive();
     const s32 time = static_cast<s32>(event.timeMs);
+    const std::optional<std::size_t> stuntInputIndex =
+            StuntInputIndex(event.action);
+    if (stuntInputIndex.has_value()) {
+        state.stuntInputLastChangeTimeMs[*stuntInputIndex] = event.timeMs;
+    }
     switch (event.action) {
     case ReplayInputActionKind::Accelerate:
         state.accelerate = active;
@@ -85,10 +117,39 @@ void ApplyEvent(ReplayControlState &state, const ReplayInputEvent &event) {
     }
 }
 
+ReplayStuntInputState StuntInputStateFromControlState(
+        const ReplayControlState &state,
+        const ReplayControlTimeline &timeline) {
+    ReplayStuntInputState result;
+    for (std::size_t index = 0u;
+         index < result.lastChangeTimeMs.size();
+         ++index) {
+        const u32 inputTime = state.stuntInputLastChangeTimeMs[index];
+        const std::uint64_t translated =
+                static_cast<std::uint64_t>(timeline.validationPrestartMs) +
+                inputTime;
+        if (translated <= timeline.inputTimeBaseMs) {
+            result.lastChangeTimeMs[index] = 0u;
+            continue;
+        }
+        const std::uint64_t simulationTime =
+                translated - timeline.inputTimeBaseMs;
+        result.lastChangeTimeMs[index] = simulationTime <= UINT32_MAX
+                ? static_cast<u32>(simulationTime)
+                : UINT32_MAX;
+    }
+    return result;
+}
+
 ReplayVehicleControlState ControlsFromState(const ReplayControlState &state) {
     double steering = 0.0;
     const s32 digitalSteerTime = ((state.steerLeftTime) > (state.steerRightTime) ? (state.steerLeftTime) : (state.steerRightTime));
-    if (state.steerTime > digitalSteerTime) {
+    const bool analogSteeringWins =
+            state.steerTime > digitalSteerTime ||
+            (state.steerTime == digitalSteerTime &&
+             !state.steerLeft && !state.steerRight &&
+             std::fabs(state.steerValue) > 0.0099999998);
+    if (analogSteeringWins) {
         steering = -state.steerValue;
     } else if (state.steerLeft) {
         steering = -1.0;
@@ -99,7 +160,11 @@ ReplayVehicleControlState ControlsFromState(const ReplayControlState &state) {
     double lowSpeedGateA = 0.0;
     double lowSpeedGateB = 0.0;
     const s32 digitalGateTime = ((state.accelerateTime) > (state.brakeTime) ? (state.accelerateTime) : (state.brakeTime));
-    if (state.gasTime > digitalGateTime) {
+    const bool analogGasWins =
+            state.gasTime > digitalGateTime ||
+            (state.gasTime == digitalGateTime &&
+             !state.accelerate && !state.brake);
+    if (analogGasWins) {
         if (state.gasValue >= 0.30000001) {
             lowSpeedGateA = 1.0;
         } else if (state.gasValue <= -0.30000001) {
@@ -149,6 +214,7 @@ ReplayControlPlanBuildResult BuildTimelinePlan(
     std::size_t endpointCursor = 0u;
     bool previousRaceRunning = false;
     bool raceStartResetDone = false;
+    bool raceSpawnEstablished = false;
     s32 finalTarget = targets.back().timeMs;
     std::optional<s32> finalObservationTickMs;
     if (timeline.validationDurationMs >= 0) {
@@ -160,7 +226,7 @@ ReplayControlPlanBuildResult BuildTimelinePlan(
         }
     }
 
-    const std::optional<s32> initialResetMs =
+    const std::optional<s32> raceSpawnMs =
             timeline.establishRaceSpawnAtMs.has_value()
                     ? timeline.establishRaceSpawnAtMs
                     : timeline.enableRaceSimulationAfterMs;
@@ -185,6 +251,7 @@ ReplayControlPlanBuildResult BuildTimelinePlan(
                         ? &timeline.inputTimeline->Events()
                         : nullptr;
         u32 respawnEventCount = 0u;
+        bool finishRace = false;
         while (events != nullptr &&
                eventCursor < events->size() &&
                (*events)[eventCursor].timeMs <= inputSampleTime) {
@@ -192,6 +259,10 @@ ReplayControlPlanBuildResult BuildTimelinePlan(
             if (event.action == ReplayInputActionKind::Respawn &&
                 event.value.IsActive()) {
                 ++respawnEventCount;
+            }
+            if (event.action == ReplayInputActionKind::FinishLine &&
+                event.value.IsCanonicalPress()) {
+                finishRace = true;
             }
             ApplyEvent(state, event);
             ++eventCursor;
@@ -213,9 +284,10 @@ ReplayControlPlanBuildResult BuildTimelinePlan(
                 timeMs == *finalObservationTickMs;
 
         ReplayRaceTransitionActions actions = timeline.baseActions;
-        if (out->ticks.empty() && AtOrAfter(timeMs, initialResetMs)) {
+        actions.finishRace = finishRace;
+        if (!raceSpawnEstablished && AtOrAfter(timeMs, raceSpawnMs)) {
             actions.establishRaceSpawn = true;
-            actions.suppressVehicleForceCallbacks = true;
+            raceSpawnEstablished = true;
         }
         if (AtOrAfter(timeMs, timeline.enableRaceSimulationAfterMs)) {
             actions.enableRaceSimulation = true;
@@ -235,6 +307,7 @@ ReplayControlPlanBuildResult BuildTimelinePlan(
         tick.observe = endpoint != nullptr || forceObservation;
         tick.actions = actions;
         tick.controls = ControlsFromState(state);
+        tick.stuntsInput = StuntInputStateFromControlState(state, timeline);
         if (endpoint != nullptr) {
             tick.comparisonTarget = endpoint->comparisonTarget;
             ++out->comparisonTargetCount;

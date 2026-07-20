@@ -89,6 +89,11 @@ enum class ValidationFailureReason : std::uint16_t {
     DefaultVehicleUnavailable = 305,
     AssetRepositoryUnavailable = 306,
     AssetPathEscapesRoot = 307,
+    InstalledPackMissing = 308,
+    InstalledPackInvalid = 309,
+    UnsupportedMapEnvironmentIdentifier = 310,
+    UnsupportedVehicleIdentifier = 311,
+    UnsupportedPlayMode = 312,
     ReplayFileOpenFailed = 400,
     ReplayFileLengthInvalid = 401,
     ReplayFileReadFailed = 402,
@@ -168,10 +173,43 @@ enum class ValidationStatus {
     RaceCompletionUnavailable, ExpectingCompletedRace, RaceTimeMismatch,
     StuntsScoreMismatch, RespawnCountMismatch,
     RespawnExpectationUnavailable, ObservationError,
+    IncompatibleReplayVersion = 11,
+    InputUnavailable = 12,
 };
 
 enum class ValidationOutcome { Invalid, Valid, WrongSimulation, Unavailable, Error };
 enum class ObservationError { NonFiniteDistance, ReplayMetadataUnavailable };
+
+enum class MapEnvironment : std::uint8_t {
+    Unknown,
+    Alpine,
+    Speed,
+    Rally,
+    Island,
+    Coast,
+    Bay,
+    Stadium,
+};
+
+enum class VehicleModel : std::uint8_t {
+    Unknown,
+    SnowCar,
+    DesertCar,
+    RallyCar,
+    IslandCar,
+    CoastCar,
+    BayCar,
+    StadiumCar,
+};
+
+enum class PlayMode : std::uint8_t {
+    Race,
+    Platform,
+    Puzzle,
+    Crazy,
+    Shortcut,
+    Stunts,
+};
 
 struct Vector3 { float x = 0.0f; float y = 0.0f; float z = 0.0f; };
 struct ValidationDeviation {
@@ -184,6 +222,10 @@ struct ValidationDeviation {
     Vector3 targetPosition;
 };
 struct ValidationMetadata {
+    MapEnvironment mapEnvironment = MapEnvironment::Unknown;
+    VehicleModel vehicleModel = VehicleModel::Unknown;
+    std::optional<PlayMode> playMode;
+    std::optional<std::uint32_t> expectedStuntsScore;
     std::size_t sampleCount = 0u;
     std::uint32_t samplePeriodMs = 0u;
     std::size_t encodedGhostSampleByteCount = 0u;
@@ -270,6 +312,9 @@ const char *ValidationErrorCategoryName(ValidationErrorCategory category) noexce
 const char *ValidationErrorCodeName(ValidationErrorCode code) noexcept;
 const char *ValidationStageName(ValidationStage stage) noexcept;
 const char *ValidationFailureReasonName(ValidationFailureReason reason) noexcept;
+const char *MapEnvironmentName(MapEnvironment environment) noexcept;
+const char *VehicleModelName(VehicleModel vehicle) noexcept;
+const char *PlayModeName(PlayMode mode) noexcept;
 int ValidationErrorExitCode(const ValidationError &error) noexcept;
 int ValidationLegacyParserCode(ValidationFailureReason reason) noexcept;
 int ValidationLegacySimulationCode(ValidationFailureReason reason) noexcept;

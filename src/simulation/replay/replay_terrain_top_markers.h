@@ -14,14 +14,15 @@ public:
             const ReplaySceneDefinition &scene,
             const CGameCtnReplayMapInput &mapInput);
     bool BuildFromFieldUnits(
+            const ReplaySceneDefinition &scene,
             const CGameCtnReplayMapInput &mapInput,
             const ChallengeFieldUnits &fieldUnits);
     bool Contains(int32_t x, int32_t y, int32_t z) const;
 
 private:
-    bool BeginMap(const CGameCtnReplayMapInput &mapInput);
+    bool BeginMap(const GmNat3 &mapSize);
     bool AddTopMarker(int32_t x, int32_t y, int32_t z);
-    bool AddBaseMarkersForUnoccupiedColumns();
+    bool AddBaseMarkersForUnoccupiedColumns(u32 defaultZoneHeight);
     void MarkOccupiedColumn(int32_t x, int32_t z);
     void Clear();
 

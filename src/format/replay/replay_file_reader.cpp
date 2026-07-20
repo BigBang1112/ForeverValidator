@@ -12,7 +12,10 @@
 #include "format/compression/lzo1x.h"
 #include "format/archive/archive_class_ids.h"
 #include "format/archive/mw_id_archive_codec.h"
+#include "format/archive/mw_deprecated.h"
+#include "format/archive/tmnf_gbx_body_reader.h"
 #include <new>
+
 namespace {
 
 using Byte = std::uint8_t;
@@ -28,14 +31,18 @@ constexpr Nat32 GbxMaximumHeaderChunks = 0x1000u;
 constexpr Nat32 ArchiveFacade = 0xfacade01u;
 constexpr Nat32 SkipSentinel = 0x534b4950u;
 
+constexpr Nat32 ReplayClassId = 0x03093000u;
+constexpr Nat32 DeprecatedReplayClassId = 0x2407e000u;
 constexpr Nat32 ReplayEmbeddedChallengeChunk = 0x03093002u;
+constexpr Nat32 ReplayDeprecatedGhostBufferChunk = 0x03093004u;
 constexpr Nat32 ReplayGhostBufferChunk = 0x03093014u;
+constexpr Nat32 ReplayPostGhostChunk = 0x03093015u;
 constexpr Nat32 ReplayMaximumBodyChunks = 64u;
 
 constexpr std::size_t MaximumChallengeBodyBytes = 0x01000000u;
-constexpr std::size_t MaximumMapBlocks = 8192u;
+constexpr std::size_t MaximumMapBlocks = 0x00020000u;
 constexpr std::size_t MaximumChallengeIds = 0x1000u;
-constexpr std::size_t MaximumSkinNodes = 0x1000u;
+constexpr std::size_t MaximumPuzzleStockEntries = 0x1000u;
 constexpr Nat32 NullArchiveNode = 0xffffffffu;
 constexpr Nat32 BlockVariantMask = 0x3fu;
 constexpr Nat32 BlockMobilSelectionMask = 0x0fc0u;
@@ -52,10 +59,19 @@ constexpr Nat32 ChallengeIdentifierChunk = 0x0304300du;
 constexpr Nat32 ChallengeDecorationChunk = 0x03043011u;
 constexpr Nat32 ChallengeBlocksChunk = 0x0304301fu;
 constexpr Nat32 ChallengePostBlocksChunk = 0x03043021u;
+constexpr Nat32 ChallengeBlockStockClassId = 0x0301b000u;
+constexpr Nat32 ChallengeBlockStockChunk = 0x0301b000u;
+constexpr Nat32 ChallengeParametersClassId = 0x0305b000u;
+constexpr Nat32 ChallengeParametersStuntsChunk = 0x0305b007u;
+constexpr Nat32 ChallengeParametersStuntsScoreChunk = 0x0305b008u;
 
 constexpr Nat32 GhostBaseStateChunk = 0x0303f005u;
 constexpr Nat32 GhostGenericWrappedChunk = 0x0304f001u;
+constexpr Nat32 GhostClassId = 0x03092000u;
+constexpr Nat32 GhostDeprecatedValidationInputChunk = 0x03092011u;
 constexpr Nat32 GhostValidationInputChunk = 0x03092019u;
+constexpr Nat32 DeprecatedReplayGhostVersion = 6u;
+constexpr Nat32 DeprecatedGhostArrayVersion = 10u;
 constexpr Nat32 GhostArchiveCountLimit = 0x10000000u;
 constexpr std::size_t GhostInputEventBytes = 9u;
 constexpr std::size_t GhostStateDataOffset = 24u;
@@ -107,6 +123,18 @@ struct Bytes {
     }
 };
 
+Nat32 WrapChunkId(Nat32 chunkId) {
+    constexpr Nat32 ClassMask = 0xfffff000u;
+    constexpr Nat32 ChunkMask = 0x00000fffu;
+    return CMwDeprecated::WrapClassId(chunkId & ClassMask) |
+           (chunkId & ChunkMask);
+}
+
+bool IsReplayClassId(Nat32 classId) {
+    return classId == DeprecatedReplayClassId ||
+           CMwDeprecated::WrapClassId(classId) == ReplayClassId;
+}
+
 ReplayFileReadError DecompressReplayBody(
         const std::vector<Byte> &fileStorage,
         std::vector<Byte> *outBody) {
@@ -129,8 +157,8 @@ ReplayFileReadError DecompressReplayBody(
         !file.ReadU32(17u, &headerChunkCount)) {
         return ReplayFileReadError::InvalidContainer;
     }
-    (void)rootClassId;
     if (version < 3u || version > GbxVersion6 ||
+        !IsReplayClassId(rootClassId) ||
         file.data[5] != GbxBinary ||
         file.data[6] != GbxUncompressed ||
         file.data[7] != GbxCompressed ||
@@ -166,16 +194,20 @@ ReplayFileReadError DecompressReplayBody(
         headerPayload += chunkSize;
     }
 
-    Nat32 referenceCount = 0u;
-    Nat32 locationCount = 0u;
-    if (!file.ReadU32(headerEnd, &referenceCount) ||
-        !file.ReadU32(headerEnd + 4u, &locationCount) ||
-        locationCount != 0u) {
+    Nat32 parsedClassId = 0u;
+    GbxBodyReferenceTable referenceTable;
+    if (file.size > std::numeric_limits<Nat32>::max() ||
+        !GbxBodyOffsetReader::TryParseWithReferences(
+                file.data,
+                static_cast<Nat32>(file.size),
+                &parsedClassId,
+                &referenceTable) ||
+        parsedClassId != rootClassId ||
+        referenceTable.bodyOffset < headerEnd + 8u) {
         return ReplayFileReadError::InvalidContainer;
     }
-    (void)referenceCount;
 
-    const std::size_t bodyBlock = headerEnd + 8u;
+    const std::size_t bodyBlock = referenceTable.bodyOffset;
     Nat32 uncompressedSize = 0u;
     Nat32 compressedSize = 0u;
     if (!file.ReadU32(bodyBlock, &uncompressedSize) ||
@@ -225,7 +257,19 @@ bool IsReplayWrappedChunk(Nat32 chunkId) {
 struct ReplayRecordSections {
     std::optional<Bytes> embeddedChallenge;
     Bytes ghostBuffer;
+    ReplayCompatibilityMetadata compatibilityMetadata;
 };
+
+ReplayCompatibilityMetadata ReplayCompatibilityForVersion(
+        ReplayVersion replayVersion) {
+    ReplayCompatibilityMetadata metadata;
+    metadata.replayVersion = replayVersion;
+    metadata.currentGameVersion = ReplayVersion::TMr7;
+    metadata.compatibility = replayVersion == metadata.currentGameVersion
+            ? ReplayCompatibility::Compatible
+            : ReplayCompatibility::Incompatible;
+    return metadata;
+}
 
 ReplayFileReadError FindReplayRecordSections(
         Bytes replayBody,
@@ -238,20 +282,26 @@ ReplayFileReadError FindReplayRecordSections(
     for (Nat32 chunkIndex = 0u;
          chunkIndex < ReplayMaximumBodyChunks;
          ++chunkIndex) {
-        Nat32 chunkId = 0u;
-        if (!replayBody.ReadU32(offset, &chunkId)) {
+        Nat32 archivedChunkId = 0u;
+        if (!replayBody.ReadU32(offset, &archivedChunkId)) {
             return ReplayFileReadError::MissingGhostBuffer;
         }
+        const Nat32 chunkId = WrapChunkId(archivedChunkId);
         if (chunkId == ArchiveFacade) {
             return ReplayFileReadError::MissingGhostBuffer;
         }
-        if (chunkId == ReplayGhostBufferChunk) {
+        if (chunkId == ReplayGhostBufferChunk ||
+            chunkId == ReplayDeprecatedGhostBufferChunk) {
             const std::optional<Bytes> ghost = replayBody.Slice(
                     offset, replayBody.size - offset);
             if (!ghost) {
                 return ReplayFileReadError::MissingGhostBuffer;
             }
             out->ghostBuffer = *ghost;
+            out->compatibilityMetadata = ReplayCompatibilityForVersion(
+                    chunkId == ReplayDeprecatedGhostBufferChunk
+                            ? ReplayVersion::TMr6
+                            : ReplayVersion::TMr7);
             return ReplayFileReadError::Success;
         }
         if (chunkId == ReplayEmbeddedChallengeChunk) {
@@ -349,7 +399,7 @@ struct ArchiveIdentifier {
     std::string name;
 };
 
-class ChallengeIdentifierTable {
+class ArchiveIdentifierTable {
 public:
     bool Read(ArchiveCursor *cursor, ArchiveIdentifier *out) {
         if (cursor == nullptr || out == nullptr) {
@@ -423,6 +473,11 @@ private:
     std::vector<ArchiveIdentifier> entries_;
 };
 
+ReplayArchiveIdentifier ToReplayIdentifier(
+        const ArchiveIdentifier (&parts)[3]) {
+    return {parts[0].name, parts[1].name, parts[2].name};
+}
+
 bool FindFacade(Bytes bytes, std::size_t offset, std::size_t *outOffset) {
     if (outOffset == nullptr) {
         return false;
@@ -441,8 +496,70 @@ bool FindFacade(Bytes bytes, std::size_t offset, std::size_t *outOffset) {
     return false;
 }
 
-bool SkipInlineArchiveNode(ArchiveCursor *cursor) {
-    if (cursor == nullptr) {
+class ChallengeNodeTable {
+public:
+    explicit ChallengeNodeTable(
+            const GbxBodyReferenceTable &referenceTable)
+        : nodeCount_(referenceTable.nodeCount),
+          externalNodes_(referenceTable.externalNodeIndices) {}
+
+    bool IsExternal(Nat32 nodeIndex) const {
+        return Contains(externalNodes_, nodeIndex);
+    }
+
+    bool IsSeen(Nat32 nodeIndex) const {
+        return Contains(inlineNodes_, nodeIndex);
+    }
+
+    bool MarkInline(Nat32 nodeIndex) {
+        if (nodeIndex == 0u || nodeIndex == NullArchiveNode ||
+            nodeIndex > nodeCount_ || IsExternal(nodeIndex) ||
+            IsSeen(nodeIndex) || inlineNodes_.size() >= nodeCount_) {
+            return false;
+        }
+        try {
+            inlineNodes_.push_back(nodeIndex);
+        } catch (const std::bad_alloc &) {
+            return false;
+        }
+        return true;
+    }
+
+private:
+    static bool Contains(
+            const std::vector<Nat32> &nodes,
+            Nat32 nodeIndex) {
+        for (Nat32 candidate : nodes) {
+            if (candidate == nodeIndex) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    Nat32 nodeCount_ = 0u;
+    std::vector<Nat32> externalNodes_;
+    std::vector<Nat32> inlineNodes_;
+};
+
+enum class ChallengeNodeReferenceKind {
+    Null,
+    Existing,
+    External,
+    Inline,
+};
+
+struct ChallengeNodeReferenceHeader {
+    ChallengeNodeReferenceKind kind = ChallengeNodeReferenceKind::Null;
+    Nat32 nodeIndex = NullArchiveNode;
+    Nat32 classId = 0u;
+};
+
+bool ReadChallengeNodeReferenceHeader(
+        ArchiveCursor *cursor,
+        ChallengeNodeTable *nodes,
+        ChallengeNodeReferenceHeader *out) {
+    if (cursor == nullptr || nodes == nullptr || out == nullptr) {
         return false;
     }
     Nat32 nodeIndex = 0u;
@@ -450,62 +567,148 @@ bool SkipInlineArchiveNode(ArchiveCursor *cursor) {
         return false;
     }
     if (nodeIndex == NullArchiveNode) {
+        *out = {};
         return true;
+    }
+    if (nodes->IsExternal(nodeIndex)) {
+        *out = {ChallengeNodeReferenceKind::External, nodeIndex, 0u};
+        return true;
+    }
+    if (nodes->IsSeen(nodeIndex)) {
+        *out = {ChallengeNodeReferenceKind::Existing, nodeIndex, 0u};
+        return true;
+    }
+    if (!nodes->MarkInline(nodeIndex)) {
+        return false;
     }
     Nat32 classId = 0u;
     if (!cursor->ReadU32(&classId)) {
         return false;
     }
-    (void)classId;
+    *out = {ChallengeNodeReferenceKind::Inline,
+            nodeIndex,
+            CMwDeprecated::WrapClassId(classId)};
+    return true;
+}
+
+bool SkipInlineArchiveNodeBody(ArchiveCursor *cursor) {
+    if (cursor == nullptr) {
+        return false;
+    }
     std::size_t facadeOffset = 0u;
     if (!FindFacade(cursor->AllBytes(), cursor->Offset(), &facadeOffset)) {
         return false;
     }
     cursor->SetOffset(facadeOffset + 4u);
     return true;
+}
+
+bool ReadChallengeParametersArchiveNode(
+        ArchiveCursor *cursor,
+        ReplayChallengeMetadata *metadata) {
+    if (cursor == nullptr || metadata == nullptr) {
+        return false;
+    }
+    std::size_t facadeOffset = 0u;
+    const Bytes bytes = cursor->AllBytes();
+    if (!FindFacade(bytes, cursor->Offset(), &facadeOffset)) {
+        return false;
+    }
+
+    Nat32 chunkId = 0u;
+    Nat32 timeLimitMs = DefaultChallengeStuntsTimeLimitMs;
+    if (facadeOffset >= cursor->Offset() + 12u &&
+        bytes.ReadU32(facadeOffset - 12u, &chunkId) &&
+        WrapChunkId(chunkId) == ChallengeParametersStuntsScoreChunk) {
+        if (!bytes.ReadU32(facadeOffset - 8u, &timeLimitMs)) {
+            return false;
+        }
+    } else if (facadeOffset >= cursor->Offset() + 8u &&
+               bytes.ReadU32(facadeOffset - 8u, &chunkId) &&
+               WrapChunkId(chunkId) == ChallengeParametersStuntsChunk) {
+        if (!bytes.ReadU32(facadeOffset - 4u, &timeLimitMs)) {
+            return false;
+        }
+    }
+    metadata->stuntsTimeLimitMs = timeLimitMs;
+    cursor->SetOffset(facadeOffset + 4u);
+    return true;
+}
+
+bool ReadPuzzleBlockStockArchiveNode(
+        ArchiveCursor *cursor,
+        ArchiveIdentifierTable *identifiers,
+        ReplayChallengeMetadata *metadata) {
+    if (cursor == nullptr || identifiers == nullptr || metadata == nullptr) {
+        return false;
+    }
+    Nat32 chunkId = 0u;
+    Nat32 entryCount = 0u;
+    if (!cursor->ReadU32(&chunkId) ||
+        WrapChunkId(chunkId) != ChallengeBlockStockChunk ||
+        !cursor->ReadU32(&entryCount) ||
+        entryCount > MaximumPuzzleStockEntries) {
+        return false;
+    }
+    try {
+        metadata->puzzleBlockStock.reserve(entryCount);
+        for (Nat32 index = 0u; index < entryCount; ++index) {
+            ArchiveIdentifier blockModel[3];
+            Nat32 count = 0u;
+            if (!identifiers->ReadTriple(cursor, blockModel) ||
+                !cursor->ReadU32(&count)) {
+                return false;
+            }
+            metadata->puzzleBlockStock.push_back(
+                    {ToReplayIdentifier(blockModel), count});
+        }
+    } catch (const std::bad_alloc &) {
+        return false;
+    }
+    Nat32 facade = 0u;
+    return cursor->ReadU32(&facade) && facade == ArchiveFacade;
+}
+
+bool ReadChallengePreambleNode(
+        ArchiveCursor *cursor,
+        ChallengeNodeTable *nodes,
+        ArchiveIdentifierTable *identifiers,
+        ReplayChallengeMetadata *metadata,
+        bool isBlockStock) {
+    ChallengeNodeReferenceHeader reference;
+    if (!ReadChallengeNodeReferenceHeader(cursor, nodes, &reference)) {
+        return false;
+    }
+    if (reference.kind != ChallengeNodeReferenceKind::Inline) {
+        return true;
+    }
+    if (isBlockStock) {
+        if (reference.classId != ChallengeBlockStockClassId) {
+            return false;
+        }
+        return ReadPuzzleBlockStockArchiveNode(
+                cursor, identifiers, metadata);
+    }
+    if (reference.classId != ChallengeParametersClassId) {
+        return false;
+    }
+    return ReadChallengeParametersArchiveNode(cursor, metadata);
 }
 
 bool SkipSkinArchiveNode(
         ArchiveCursor *cursor,
-        std::vector<Nat32> *seenNodes) {
-    if (cursor == nullptr || seenNodes == nullptr) {
+        ChallengeNodeTable *nodes) {
+    ChallengeNodeReferenceHeader reference;
+    if (!ReadChallengeNodeReferenceHeader(cursor, nodes, &reference)) {
         return false;
     }
-    Nat32 nodeIndex = 0u;
-    if (!cursor->ReadU32(&nodeIndex)) {
-        return false;
-    }
-    if (nodeIndex == NullArchiveNode) {
-        return true;
-    }
-    for (Nat32 seen : *seenNodes) {
-        if (seen == nodeIndex) {
-            return true;
-        }
-    }
-    if (seenNodes->size() >= MaximumSkinNodes) {
-        return false;
-    }
-    Nat32 classId = 0u;
-    if (!cursor->ReadU32(&classId)) {
-        return false;
-    }
-    (void)classId;
-    std::size_t facadeOffset = 0u;
-    if (!FindFacade(cursor->AllBytes(), cursor->Offset(), &facadeOffset)) {
-        return false;
-    }
-    try {
-        seenNodes->push_back(nodeIndex);
-    } catch (const std::bad_alloc &) {
-        return false;
-    }
-    cursor->SetOffset(facadeOffset + 4u);
-    return true;
+    return reference.kind != ChallengeNodeReferenceKind::Inline ||
+           SkipInlineArchiveNodeBody(cursor);
 }
 
 bool IsChallengeWrappedChunk(Nat32 chunkId) {
     switch (chunkId) {
+    case 0x03043014u:
     case 0x03043017u:
     case 0x03043018u:
     case 0x03043019u:
@@ -558,25 +761,46 @@ BlockPlacementState DecodeBlockPlacement(Nat32 flags) {
 bool ReadChallengePreamble(
         Bytes challengeBody,
         ArchiveCursor &cursor,
-        ChallengeIdentifierTable &identifiers) {
+        ArchiveIdentifierTable &identifiers,
+        ChallengeNodeTable &nodes,
+        ReplayChallengeMetadata *metadata) {
+    if (metadata == nullptr) {
+        return false;
+    }
     Nat32 chunkId = 0u;
-    ArchiveIdentifier ignoredChallengeIdentifiers[3];
+    ArchiveIdentifier challengeIdentifiers[3];
     Nat32 ignoredDecorationVersion = 0u;
-    return cursor.ReadU32(&chunkId) && chunkId == ChallengeIdentifierChunk &&
-           identifiers.ReadTriple(&cursor, ignoredChallengeIdentifiers) &&
-           cursor.ReadU32(&chunkId) && chunkId == ChallengeDecorationChunk &&
-           SkipInlineArchiveNode(&cursor) && SkipInlineArchiveNode(&cursor) &&
-           cursor.ReadU32(&ignoredDecorationVersion) &&
-           challengeBody.Contains(cursor.Offset(), 0u);
+    if (!cursor.ReadU32(&chunkId) ||
+        WrapChunkId(chunkId) != ChallengeIdentifierChunk ||
+        !identifiers.ReadTriple(&cursor, challengeIdentifiers) ||
+        !cursor.ReadU32(&chunkId) ||
+        WrapChunkId(chunkId) != ChallengeDecorationChunk ||
+        !ReadChallengePreambleNode(
+                &cursor, &nodes, &identifiers, metadata, true) ||
+        !ReadChallengePreambleNode(
+                &cursor, &nodes, &identifiers, metadata, false) ||
+        !cursor.ReadU32(&ignoredDecorationVersion) ||
+        !challengeBody.Contains(cursor.Offset(), 0u)) {
+        return false;
+    }
+    metadata->challengeVehicle = ToReplayIdentifier(challengeIdentifiers);
+    return true;
 }
 
-bool SeekChallengeBlocks(Bytes bytes, ArchiveCursor &cursor) {
+bool SeekChallengeBlocks(
+        Bytes bytes,
+        ArchiveCursor &cursor,
+        ReplayChallengeMetadata *metadata) {
+    if (metadata == nullptr) {
+        return false;
+    }
     while (bytes.Contains(cursor.Offset(), 4u)) {
         const std::size_t chunkOffset = cursor.Offset();
-        Nat32 chunkId = 0u;
-        if (!cursor.ReadU32(&chunkId)) {
+        Nat32 archivedChunkId = 0u;
+        if (!cursor.ReadU32(&archivedChunkId)) {
             return false;
         }
+        const Nat32 chunkId = WrapChunkId(archivedChunkId);
         if (chunkId == ChallengeBlocksChunk) {
             return true;
         }
@@ -586,6 +810,29 @@ bool SeekChallengeBlocks(Bytes bytes, ArchiveCursor &cursor) {
         std::size_t next = 0u;
         if (!SkipWrapped(bytes, chunkOffset, &next)) {
             return false;
+        }
+        Nat32 payloadSize = 0u;
+        if (!bytes.ReadU32(chunkOffset + 8u, &payloadSize)) {
+            return false;
+        }
+        if (chunkId == 0x03043018u) {
+            Nat32 isLapRace = 0u;
+            if (payloadSize != 8u ||
+                !bytes.ReadU32(chunkOffset + 12u, &isLapRace) ||
+                !bytes.ReadU32(chunkOffset + 16u, &metadata->lapCount) ||
+                isLapRace > 1u) {
+                return false;
+            }
+            metadata->isLapRace = isLapRace != 0u;
+        } else if (chunkId == 0x0304301cu) {
+            Nat32 playMode = 0u;
+            if (payloadSize != 4u ||
+                !bytes.ReadU32(chunkOffset + 12u, &playMode) ||
+                playMode > static_cast<Nat32>(EChallengePlayMode::Stunts)) {
+                return false;
+            }
+            metadata->playMode =
+                    static_cast<EChallengePlayMode>(playMode);
         }
         cursor.SetOffset(next);
     }
@@ -602,7 +849,7 @@ struct ChallengeBlockHeader {
 
 std::optional<ChallengeBlockHeader> ReadChallengeBlockHeader(
         ArchiveCursor &cursor,
-        ChallengeIdentifierTable &identifiers) {
+        ArchiveIdentifierTable &identifiers) {
     ChallengeBlockHeader header;
     std::string ignoredMapName;
     Nat32 ignoredSerializedLightmap = 0u;
@@ -624,13 +871,12 @@ std::optional<ChallengeBlockHeader> ReadChallengeBlockHeader(
 std::optional<std::vector<CGameCtnReplayMapInputBlock>> ReadChallengeBlocks(
         Bytes bytes,
         ArchiveCursor &cursor,
-        ChallengeIdentifierTable &identifiers,
+        ArchiveIdentifierTable &identifiers,
+        ChallengeNodeTable &nodes,
         const ChallengeBlockHeader &header) {
     std::vector<CGameCtnReplayMapInputBlock> blocks;
-    std::vector<Nat32> seenSkinNodes;
     try {
         blocks.reserve(header.blockCount);
-        seenSkinNodes.reserve(MaximumSkinNodes);
     } catch (const std::bad_alloc &) {
         return std::nullopt;
     }
@@ -654,7 +900,7 @@ std::optional<std::vector<CGameCtnReplayMapInputBlock>> ReadChallengeBlocks(
         if ((flags & BlockHasSkin) != 0u) {
             ArchiveIdentifier ignoredSkin;
             if (!identifiers.Read(&cursor, &ignoredSkin) ||
-                !SkipSkinArchiveNode(&cursor, &seenSkinNodes)) {
+                !SkipSkinArchiveNode(&cursor, &nodes)) {
                 return std::nullopt;
             }
         }
@@ -675,10 +921,11 @@ std::optional<std::vector<CGameCtnReplayMapInputBlock>> ReadChallengeBlocks(
 
 bool HasChallengePostBlocks(Bytes bytes, std::size_t offset) {
     while (bytes.Contains(offset, 4u)) {
-        Nat32 chunkId = 0u;
-        if (!bytes.ReadU32(offset, &chunkId)) {
+        Nat32 archivedChunkId = 0u;
+        if (!bytes.ReadU32(offset, &archivedChunkId)) {
             return false;
         }
+        const Nat32 chunkId = WrapChunkId(archivedChunkId);
         if (chunkId == ChallengePostBlocksChunk) {
             return true;
         }
@@ -691,14 +938,23 @@ bool HasChallengePostBlocks(Bytes bytes, std::size_t offset) {
 
 ReplayFileReadError ParseChallengeBody(
         Bytes challengeBody,
-        CGameCtnReplayMapInput *outMap) {
-    if (outMap == nullptr) {
+        const GbxBodyReferenceTable &referenceTable,
+        CGameCtnReplayMapInput *outMap,
+        ReplayChallengeMetadata *outMetadata) {
+    if (outMap == nullptr || outMetadata == nullptr) {
         return ReplayFileReadError::InvalidRequest;
     }
+    *outMetadata = {};
     ArchiveCursor cursor(challengeBody);
-    ChallengeIdentifierTable identifiers;
-    if (!ReadChallengePreamble(challengeBody, cursor, identifiers) ||
-        !SeekChallengeBlocks(challengeBody, cursor)) {
+    ArchiveIdentifierTable identifiers;
+    ChallengeNodeTable nodes(referenceTable);
+    if (!ReadChallengePreamble(
+                challengeBody,
+                cursor,
+                identifiers,
+                nodes,
+                outMetadata) ||
+        !SeekChallengeBlocks(challengeBody, cursor, outMetadata)) {
         return ReplayFileReadError::InvalidMap;
     }
     auto header = ReadChallengeBlockHeader(cursor, identifiers);
@@ -706,7 +962,7 @@ ReplayFileReadError ParseChallengeBody(
         return ReplayFileReadError::InvalidMap;
     }
     auto blocks = ReadChallengeBlocks(
-            challengeBody, cursor, identifiers, *header);
+            challengeBody, cursor, identifiers, nodes, *header);
     if (!blocks.has_value() ||
         !HasChallengePostBlocks(challengeBody, cursor.Offset())) {
         return ReplayFileReadError::InvalidMap;
@@ -726,7 +982,11 @@ ReplayFileReadError ParseChallengeBody(
 
 ReplayFileReadError ReadEmbeddedChallenge(
         const ReplayRecordSections &sections,
-        CGameCtnReplayMapInput *outMap) {
+        CGameCtnReplayMapInput *outMap,
+        ReplayChallengeMetadata *outMetadata) {
+    if (outMap == nullptr || outMetadata == nullptr) {
+        return ReplayFileReadError::InvalidRequest;
+    }
     if (!sections.embeddedChallenge.has_value()) {
         return ReplayFileReadError::MissingEmbeddedChallenge;
     }
@@ -746,8 +1006,8 @@ ReplayFileReadError ReadEmbeddedChallenge(
         !nested.ReadU32(17u, &headerChunkCount)) {
         return ReplayFileReadError::InvalidEmbeddedChallenge;
     }
-    (void)version;
-    if (classId != ChallengeClassId ||
+    if (version < 3u || version > GbxVersion6 ||
+        CMwDeprecated::WrapClassId(classId) != ChallengeClassId ||
         nested.data[5] != GbxBinary ||
         nested.data[6] != GbxUncompressed ||
         nested.data[7] != GbxCompressed ||
@@ -783,20 +1043,24 @@ ReplayFileReadError ReadEmbeddedChallenge(
         payloadOffset += chunkSize;
     }
 
-    Nat32 referenceCount = 0u;
-    Nat32 locationCount = 0u;
+    Nat32 parsedClassId = 0u;
+    GbxBodyReferenceTable referenceTable;
     Nat32 uncompressedSize = 0u;
     Nat32 compressedSize = 0u;
-    if (!nested.ReadU32(headerEnd, &referenceCount) ||
-        !nested.ReadU32(headerEnd + 4u, &locationCount) ||
-        !nested.ReadU32(headerEnd + 8u, &uncompressedSize) ||
-        !nested.ReadU32(headerEnd + 12u, &compressedSize)) {
+    if (nested.size > std::numeric_limits<Nat32>::max() ||
+        !GbxBodyOffsetReader::TryParseWithReferences(
+                nested.data,
+                static_cast<Nat32>(nested.size),
+                &parsedClassId,
+                &referenceTable) ||
+        parsedClassId != classId ||
+        referenceTable.bodyOffset < headerEnd + 8u ||
+        !nested.ReadU32(referenceTable.bodyOffset, &uncompressedSize) ||
+        !nested.ReadU32(referenceTable.bodyOffset + 4u, &compressedSize)) {
         return ReplayFileReadError::InvalidEmbeddedChallenge;
     }
-    (void)referenceCount;
-    const std::size_t compressedOffset = headerEnd + 16u;
-    if (locationCount != 0u || uncompressedSize == 0u ||
-        compressedSize == 0u ||
+    const std::size_t compressedOffset = referenceTable.bodyOffset + 8u;
+    if (uncompressedSize == 0u || compressedSize == 0u ||
         uncompressedSize > MaximumChallengeBodyBytes ||
         !nested.Contains(compressedOffset, compressedSize) ||
         compressedOffset + compressedSize != nested.size) {
@@ -822,7 +1086,8 @@ ReplayFileReadError ReadEmbeddedChallenge(
         !challengeBody.ReadU32(0u, &firstChunk)) {
         return ReplayFileReadError::InvalidEmbeddedChallenge;
     }
-    return ParseChallengeBody(challengeBody, outMap);
+    return ParseChallengeBody(
+            challengeBody, referenceTable, outMap, outMetadata);
 }
 
 bool IsGhostWrappedChunk(Nat32 chunkId) {
@@ -866,34 +1131,25 @@ bool ReadStringEnd(
     return true;
 }
 
-bool SkipLooseIdentifier(
+bool ReadLooseIdentifier(
         Bytes bytes,
         std::size_t offset,
+        ArchiveIdentifierTable *identifiers,
         std::size_t *outNext,
-        std::string *outInlineName = nullptr) {
-    Nat32 modeOrIdentifier = 0u;
-    if (outNext == nullptr ||
-        !bytes.ReadU32(offset, &modeOrIdentifier)) {
+        ArchiveIdentifier *outIdentifier = nullptr) {
+    if (identifiers == nullptr || outNext == nullptr || offset > bytes.size) {
         return false;
     }
-    std::size_t identifierOffset = offset;
-    Nat32 identifier = modeOrIdentifier;
-    if (modeOrIdentifier >= 1u && modeOrIdentifier <= 3u) {
-        identifierOffset += 4u;
-        if (!bytes.ReadU32(identifierOffset, &identifier)) {
-            return false;
-        }
+    ArchiveCursor cursor(bytes);
+    cursor.SetOffset(offset);
+    ArchiveIdentifier identifier;
+    if (!identifiers->Read(&cursor, &identifier)) {
+        return false;
     }
-    const std::size_t next = identifierOffset + 4u;
-    const TmnfFormat::ArchiveIdentifierWord parsed =
-            TmnfFormat::CMwIdArchiveCodec::ParseWord(identifier);
-    if (parsed.IsNamed() && parsed.payload == 0u) {
-        return ReadStringEnd(bytes, next, outNext, outInlineName);
+    *outNext = cursor.Offset();
+    if (outIdentifier != nullptr) {
+        *outIdentifier = std::move(identifier);
     }
-    if (outInlineName != nullptr) {
-        outInlineName->clear();
-    }
-    *outNext = next;
     return true;
 }
 
@@ -920,19 +1176,23 @@ struct InputArchiveLayout {
     std::size_t actionsOffset = 0u;
     std::size_t eventHeaderOffset = 0u;
     std::size_t eventsOffset = 0u;
+    std::size_t endOffset = 0u;
     Nat32 durationMs = 0u;
     Nat32 version = 0u;
     Nat32 actionCount = 0u;
     Nat32 eventCount = 0u;
     Nat32 capacityOrLimit = 0u;
     Nat32 validationSeed = 0u;
+    std::vector<std::string> actionNames;
 };
 
 bool ParseInputArchiveLayout(
         Bytes ghostBytes,
         std::size_t chunkOffset,
+        bool hasValidationSeed,
+        ArchiveIdentifierTable *identifiers,
         InputArchiveLayout *out) {
-    if (out == nullptr) {
+    if (identifiers == nullptr || out == nullptr) {
         return false;
     }
     *out = InputArchiveLayout{};
@@ -941,9 +1201,10 @@ bool ParseInputArchiveLayout(
     }
     out->inputStoreOffset = chunkOffset + 8u;
     if (out->durationMs == 0u) {
-        out->actionsOffset = out->inputStoreOffset + 8u;
+        out->actionsOffset = out->inputStoreOffset;
         out->eventHeaderOffset = out->actionsOffset;
-        out->eventsOffset = out->eventHeaderOffset + 8u;
+        out->eventsOffset = out->eventHeaderOffset;
+        out->endOffset = out->eventsOffset;
         return true;
     }
 
@@ -954,12 +1215,27 @@ bool ParseInputArchiveLayout(
     }
     std::size_t offset = out->inputStoreOffset + 8u;
     out->actionsOffset = offset;
-    for (Nat32 actionIndex = 0u;
-         actionIndex < out->actionCount;
-         ++actionIndex) {
-        if (!SkipLooseIdentifier(ghostBytes, offset, &offset)) {
-            return false;
+    try {
+        out->actionNames.reserve(out->actionCount);
+        for (Nat32 actionIndex = 0u;
+             actionIndex < out->actionCount;
+             ++actionIndex) {
+            ArchiveIdentifier action;
+            if (!ReadLooseIdentifier(
+                        ghostBytes,
+                        offset,
+                        identifiers,
+                        &offset,
+                        &action)) {
+                return false;
+            }
+            out->actionNames.push_back(std::move(action.name));
         }
+    } catch (const std::bad_alloc &) {
+        return false;
+    }
+    if (out->actionNames.size() != out->actionCount) {
+        return false;
     }
     out->eventHeaderOffset = offset;
     if (!ghostBytes.ReadU32(offset, &out->eventCount) ||
@@ -987,10 +1263,17 @@ bool ParseInputArchiveLayout(
         return false;
     }
     offset += 12u;
-    if (!ReadStringEnd(ghostBytes, offset, &offset) ||
+    if (!ReadStringEnd(ghostBytes, offset, &offset)) {
+        return false;
+    }
+    if (hasValidationSeed &&
         !ghostBytes.ReadU32(offset, &out->validationSeed)) {
         return false;
     }
+    if (hasValidationSeed) {
+        offset += 4u;
+    }
+    out->endOffset = offset;
     return true;
 }
 
@@ -1003,23 +1286,62 @@ struct GhostMetadata {
 
 struct GhostSections {
     InputArchiveLayout input;
+    bool hasValidationInputChunk = false;
     bool hasInput = false;
     std::optional<Bytes> compressedState;
     GhostMetadata metadata;
+    ReplayArchiveIdentifier vehicleIdentifier;
 };
 
-bool ReadGhostArchiveHeader(Bytes bytes) {
-    Nat32 chunkId = 0u;
+struct GhostArchiveHeader {
+    std::size_t firstChunkOffset = 0u;
+    Nat32 ghostCount = 0u;
+    bool hasModernTrailer = false;
+};
+
+bool ReadGhostArchiveHeader(Bytes bytes, GhostArchiveHeader *out) {
+    if (out == nullptr) {
+        return false;
+    }
+    *out = GhostArchiveHeader{};
+    Nat32 archivedChunkId = 0u;
     Nat32 version = 0u;
     Nat32 ghostCount = 0u;
     Nat32 firstGhostNode = 0u;
     Nat32 firstGhostClass = 0u;
-    return bytes.ReadU32(0u, &chunkId) && chunkId == ReplayGhostBufferChunk &&
-           bytes.ReadU32(4u, &version) &&
-           bytes.ReadU32(8u, &ghostCount) && ghostCount != 0u &&
-           ghostCount <= GhostArchiveCountLimit &&
-           bytes.ReadU32(12u, &firstGhostNode) &&
-           bytes.ReadU32(16u, &firstGhostClass);
+    if (!bytes.ReadU32(0u, &archivedChunkId) ||
+        !bytes.ReadU32(4u, &version)) {
+        return false;
+    }
+    const Nat32 chunkId = WrapChunkId(archivedChunkId);
+    if (chunkId == ReplayGhostBufferChunk) {
+        if (!bytes.ReadU32(8u, &ghostCount) || ghostCount == 0u ||
+            ghostCount > GhostArchiveCountLimit ||
+            !bytes.ReadU32(12u, &firstGhostNode) ||
+            !bytes.ReadU32(16u, &firstGhostClass) ||
+            firstGhostNode != 1u ||
+            WrapChunkId(firstGhostClass) != GhostClassId) {
+            return false;
+        }
+        out->firstChunkOffset = 20u;
+        out->ghostCount = ghostCount;
+        out->hasModernTrailer = true;
+        return true;
+    }
+    Nat32 deprecatedArrayVersion = 0u;
+    if (chunkId != ReplayDeprecatedGhostBufferChunk ||
+        version != DeprecatedReplayGhostVersion ||
+        !bytes.ReadU32(8u, &deprecatedArrayVersion) ||
+        deprecatedArrayVersion != DeprecatedGhostArrayVersion ||
+        !bytes.ReadU32(12u, &ghostCount) || ghostCount != 1u ||
+        !bytes.ReadU32(16u, &firstGhostNode) || firstGhostNode != 1u ||
+        !bytes.ReadU32(20u, &firstGhostClass) ||
+        CMwDeprecated::WrapClassId(firstGhostClass) != GhostClassId) {
+        return false;
+    }
+    out->firstChunkOffset = 24u;
+    out->ghostCount = 1u;
+    return true;
 }
 
 void CaptureGhostMetadata(
@@ -1045,7 +1367,11 @@ std::optional<std::size_t> AdvanceGhostChunk(
         std::size_t offset,
         Nat32 chunkId,
         Nat32 scanIndex,
+        ArchiveIdentifierTable *identifiers,
         GhostSections &sections) {
+    if (identifiers == nullptr) {
+        return std::nullopt;
+    }
     std::size_t next = offset;
     if (chunkId == GhostBaseStateChunk) {
         Nat32 compressedSize = 0u;
@@ -1072,10 +1398,34 @@ std::optional<std::size_t> AdvanceGhostChunk(
         }
     } else if (chunkId == 0x0309200cu) {
         next = offset + 8u;
+    } else if (chunkId == 0x0309200du) {
+        next = offset + 4u;
+        ArchiveIdentifier vehicleIdentifiers[3];
+        for (Nat32 part = 0u; part < 3u; ++part) {
+            if (!ReadLooseIdentifier(
+                        bytes,
+                        next,
+                        identifiers,
+                        &next,
+                        &vehicleIdentifiers[part])) {
+                return std::nullopt;
+            }
+        }
+        if (!ReadStringEnd(bytes, next, &next) ||
+            !bytes.Contains(next, 16u)) {
+            return std::nullopt;
+        }
+        next += 16u;
+        if (!ReadStringEnd(bytes, next, &next)) {
+            return std::nullopt;
+        }
+        sections.vehicleIdentifier =
+                ToReplayIdentifier(vehicleIdentifiers);
     } else if (chunkId == 0x0309200eu ||
                chunkId == 0x03092010u ||
                chunkId == 0x03092015u) {
-        if (!SkipLooseIdentifier(bytes, offset + 4u, &next)) {
+        if (!ReadLooseIdentifier(
+                    bytes, offset + 4u, identifiers, &next)) {
             return std::nullopt;
         }
     } else if (chunkId == 0x0309200fu) {
@@ -1086,11 +1436,19 @@ std::optional<std::size_t> AdvanceGhostChunk(
         next = offset + 24u;
     } else if (chunkId == 0x03092018u) {
         next = offset + 4u;
+        ArchiveIdentifier vehicleIdentifiers[3];
         for (Nat32 part = 0u; part < 3u; ++part) {
-            if (!SkipLooseIdentifier(bytes, next, &next)) {
+            if (!ReadLooseIdentifier(
+                        bytes,
+                        next,
+                        identifiers,
+                        &next,
+                        &vehicleIdentifiers[part])) {
                 return std::nullopt;
             }
         }
+        sections.vehicleIdentifier =
+                ToReplayIdentifier(vehicleIdentifiers);
     } else {
         return std::nullopt;
     }
@@ -1103,23 +1461,80 @@ std::optional<std::size_t> AdvanceGhostChunk(
 bool ReadGhostValidationInput(
         Bytes bytes,
         std::size_t offset,
+        bool hasValidationSeed,
         Nat32 scanIndex,
+        ArchiveIdentifierTable *identifiers,
         GhostSections &sections) {
-    Nat32 wrapperZero = 0u;
-    Nat32 wrapperFacade = 0u;
-    if (bytes.ReadU32(offset + 4u, &wrapperZero) &&
-        bytes.ReadU32(offset + 8u, &wrapperFacade) &&
-        wrapperZero == 0u && wrapperFacade == ArchiveFacade) {
+    if (sections.hasValidationInputChunk) {
         return false;
     }
-    if (!ParseInputArchiveLayout(bytes, offset, &sections.input)) {
+    if (!ParseInputArchiveLayout(
+                bytes,
+                offset,
+                hasValidationSeed,
+                identifiers,
+                &sections.input)) {
         return false;
     }
-    sections.hasInput = true;
+    sections.hasValidationInputChunk = true;
+    sections.hasInput = sections.input.durationMs != 0u;
     if (scanIndex >= 64u) {
         sections.metadata.valid = false;
     }
     return true;
+}
+
+bool ScanGhostNode(
+        Bytes ghostBytes,
+        std::size_t firstChunkOffset,
+        ArchiveIdentifierTable *identifiers,
+        GhostSections *out,
+        std::size_t *outNext) {
+    if (identifiers == nullptr || out == nullptr || outNext == nullptr) {
+        return false;
+    }
+    *out = GhostSections{};
+    std::size_t offset = firstChunkOffset;
+    for (Nat32 scanIndex = 0u; scanIndex < 128u; ++scanIndex) {
+        Nat32 archivedChunkId = 0u;
+        if (!ghostBytes.ReadU32(offset, &archivedChunkId)) {
+            return false;
+        }
+        if (archivedChunkId == ArchiveFacade) {
+            if (!out->hasValidationInputChunk) {
+                return false;
+            }
+            *outNext = offset + 4u;
+            return true;
+        }
+        const Nat32 chunkId = WrapChunkId(archivedChunkId);
+        if (chunkId == GhostValidationInputChunk ||
+            chunkId == GhostDeprecatedValidationInputChunk) {
+            if (!ReadGhostValidationInput(
+                        ghostBytes,
+                        offset,
+                        chunkId == GhostValidationInputChunk,
+                        scanIndex,
+                        identifiers,
+                        *out)) {
+                return false;
+            }
+            offset = out->input.endOffset;
+            continue;
+        }
+        auto next = AdvanceGhostChunk(
+                ghostBytes,
+                offset,
+                chunkId,
+                scanIndex,
+                identifiers,
+                *out);
+        if (!next.has_value()) {
+            return false;
+        }
+        offset = *next;
+    }
+    return false;
 }
 
 ReplayFileReadError ScanGhostArchive(
@@ -1129,29 +1544,53 @@ ReplayFileReadError ScanGhostArchive(
         return ReplayFileReadError::InvalidRequest;
     }
     *out = GhostSections{};
-    if (!ReadGhostArchiveHeader(ghostBytes)) {
+    GhostArchiveHeader header;
+    if (!ReadGhostArchiveHeader(ghostBytes, &header)) {
         return ReplayFileReadError::MissingInputStream;
     }
 
-    std::size_t offset = 20u;
-    for (Nat32 scanIndex = 0u; scanIndex < 128u; ++scanIndex) {
-        Nat32 chunkId = 0u;
-        if (!ghostBytes.ReadU32(offset, &chunkId) || chunkId == ArchiveFacade) {
+    ArchiveIdentifierTable identifiers;
+    std::size_t offset = header.firstChunkOffset;
+    for (Nat32 ghostIndex = 0u;
+         ghostIndex < header.ghostCount;
+         ++ghostIndex) {
+        if (ghostIndex != 0u) {
+            Nat32 nodeIndex = 0u;
+            Nat32 classId = 0u;
+            if (!ghostBytes.ReadU32(offset, &nodeIndex) ||
+                !ghostBytes.ReadU32(offset + 4u, &classId) ||
+                nodeIndex != ghostIndex + 1u ||
+                WrapChunkId(classId) != GhostClassId) {
+                return ReplayFileReadError::MissingInputStream;
+            }
+            offset += 8u;
+        }
+        GhostSections candidate;
+        if (!ScanGhostNode(
+                    ghostBytes,
+                    offset,
+                    &identifiers,
+                    &candidate,
+                    &offset)) {
             return ReplayFileReadError::MissingInputStream;
         }
-        if (chunkId == GhostValidationInputChunk) {
-            return ReadGhostValidationInput(ghostBytes, offset, scanIndex, *out)
-                    ? ReplayFileReadError::Success
-                    : ReplayFileReadError::MissingInputStream;
+        if (ghostIndex == 0u) {
+            *out = std::move(candidate);
         }
-        auto next = AdvanceGhostChunk(
-                ghostBytes, offset, chunkId, scanIndex, *out);
-        if (!next.has_value()) {
-            return ReplayFileReadError::MissingInputStream;
-        }
-        offset = *next;
     }
-    return ReplayFileReadError::MissingInputStream;
+    if (header.hasModernTrailer) {
+        Nat32 trailingNatural = 0u;
+        Nat32 oldShowTimeCount = 0u;
+        Nat32 postGhostChunk = 0u;
+        if (!ghostBytes.ReadU32(offset, &trailingNatural) ||
+            !ghostBytes.ReadU32(offset + 4u, &oldShowTimeCount) ||
+            !ghostBytes.ReadU32(offset + 8u, &postGhostChunk) ||
+            trailingNatural != 0u || oldShowTimeCount != 0u ||
+            WrapChunkId(postGhostChunk) != ReplayPostGhostChunk) {
+            return ReplayFileReadError::MissingInputStream;
+        }
+    }
+    return ReplayFileReadError::Success;
 }
 
 ReplayInputActionKind DecodeInputAction(std::string_view name) {
@@ -1196,12 +1635,61 @@ ReplayInputActionValue DecodeInputValue(
     return ReplayInputActionValue::Switch(state);
 }
 
+ReplayFileReadError DecodeGhostInputMetadata(
+        const GhostSections &sections,
+        Nat32 durationMs,
+        Nat32 validationSeed,
+        ReplayInputMetadata *out) {
+    if (out == nullptr) {
+        return ReplayFileReadError::InvalidRequest;
+    }
+    *out = ReplayInputMetadata{};
+    out->durationMs = durationMs;
+    out->validationSeed = validationSeed;
+    if (sections.metadata.raceTime.has_value()) {
+        const Nat32 encoded = *sections.metadata.raceTime;
+        if (encoded == std::numeric_limits<Nat32>::max()) {
+            out->raceTimeMs = 0;
+        } else if (encoded > static_cast<Nat32>(
+                                     std::numeric_limits<std::int32_t>::max())) {
+            return ReplayFileReadError::InvalidInputHeader;
+        } else {
+            out->raceTimeMs = static_cast<std::int32_t>(encoded);
+        }
+    }
+    if (sections.metadata.respawnCount.has_value() &&
+        *sections.metadata.respawnCount !=
+                std::numeric_limits<Nat32>::max()) {
+        out->respawnCount = *sections.metadata.respawnCount;
+    }
+    if (sections.metadata.stuntScore.has_value() &&
+        *sections.metadata.stuntScore !=
+                std::numeric_limits<Nat32>::max()) {
+        out->stuntScore = *sections.metadata.stuntScore;
+    }
+    return ReplayFileReadError::Success;
+}
+
 ReplayFileReadError DecodeInputTimeline(
         Bytes ghostBytes,
         const GhostSections &sections,
+        bool allowMissingInput,
         ReplayInputTimeline *outTimeline) {
     if (!sections.hasInput) {
-        return ReplayFileReadError::MissingInputStream;
+        if (!allowMissingInput || !sections.metadata.valid) {
+            return ReplayFileReadError::MissingInputStream;
+        }
+        ReplayInputMetadata metadata;
+        const ReplayFileReadError metadataError = DecodeGhostInputMetadata(
+                sections, 0u, 0u, &metadata);
+        if (metadataError != ReplayFileReadError::Success) {
+            return metadataError;
+        }
+        return ReplayInputTimeline::Create(
+                       std::move(metadata), {}, {}, outTimeline) ==
+                        ReplayInputTimelineCreateResult::Success
+                ? ReplayFileReadError::Success
+                : ReplayFileReadError::InvalidInputTimeline;
     }
     const InputArchiveLayout &layout = sections.input;
     if (layout.actionCount > 256u) {
@@ -1220,21 +1708,19 @@ ReplayFileReadError DecodeInputTimeline(
     }
 
     std::vector<ReplayInputActionKind> actionKinds;
-    std::size_t offset = layout.actionsOffset;
     try {
         actionKinds.reserve(layout.actionCount);
-        for (Nat32 index = 0u; index < layout.actionCount; ++index) {
-            std::string name;
-            if (!SkipLooseIdentifier(
-                        ghostBytes, offset, &offset, &name)) {
-                return ReplayFileReadError::InvalidInputActions;
-            }
+        for (const std::string &name : layout.actionNames) {
             actionKinds.push_back(DecodeInputAction(name));
         }
     } catch (const std::bad_alloc &) {
         return ReplayFileReadError::InvalidInputActions;
     }
+    if (actionKinds.size() != layout.actionCount) {
+        return ReplayFileReadError::InvalidInputActions;
+    }
 
+    std::size_t offset = layout.eventHeaderOffset;
     Nat32 eventCount = 0u;
     Nat32 capacityOrLimit = 0u;
     if (!ghostBytes.ReadU32(offset, &eventCount) ||
@@ -1273,28 +1759,10 @@ ReplayFileReadError DecodeInputTimeline(
     }
 
     ReplayInputMetadata metadata;
-    metadata.durationMs = layout.durationMs;
-    metadata.validationSeed = layout.validationSeed;
-    if (sections.metadata.raceTime.has_value()) {
-        const Nat32 encoded = *sections.metadata.raceTime;
-        if (encoded == std::numeric_limits<Nat32>::max()) {
-            metadata.raceTimeMs = 0;
-        } else if (encoded > static_cast<Nat32>(
-                                     std::numeric_limits<std::int32_t>::max())) {
-            return ReplayFileReadError::InvalidInputHeader;
-        } else {
-            metadata.raceTimeMs = static_cast<std::int32_t>(encoded);
-        }
-    }
-    if (sections.metadata.respawnCount.has_value() &&
-        *sections.metadata.respawnCount !=
-                std::numeric_limits<Nat32>::max()) {
-        metadata.respawnCount = *sections.metadata.respawnCount;
-    }
-    if (sections.metadata.stuntScore.has_value() &&
-        *sections.metadata.stuntScore !=
-                std::numeric_limits<Nat32>::max()) {
-        metadata.stuntScore = *sections.metadata.stuntScore;
+    const ReplayFileReadError metadataError = DecodeGhostInputMetadata(
+            sections, layout.durationMs, layout.validationSeed, &metadata);
+    if (metadataError != ReplayFileReadError::Success) {
+        return metadataError;
     }
 
     const ReplayInputTimelineCreateResult createResult =
@@ -1448,6 +1916,17 @@ bool IsCanonicalInputOnlyGhostState(const GhostStateFormat &format) {
            format.encodedSampleBytes == 0u;
 }
 
+bool IsVehicleInputOnlyGhostState(const GhostStateFormat &format) {
+    return format.mobileClassId == TMNF_CLASS_CSceneVehicleCar &&
+           format.fixedTimeStep == GhostFixedTimeStep &&
+           format.encodingMode == GhostEncodingMode &&
+           format.fixedStepMs == 100u &&
+           format.stateVersion == GhostStateVersion &&
+           format.encodedStateBytes == 0u &&
+           format.sampleCount == 0u &&
+           format.encodedSampleBytes == 0u;
+}
+
 ReplayFileReadError DecodeGhostTrajectory(
         const GhostSections &sections,
         ReplayGhostTrajectory *outTrajectory,
@@ -1471,7 +1950,8 @@ ReplayFileReadError DecodeGhostTrajectory(
         return ReplayFileReadError::InvalidGhostState;
     }
     if (format.encodedStateBytes == 0u) {
-        if (!IsCanonicalInputOnlyGhostState(format)) {
+        if (!IsCanonicalInputOnlyGhostState(format) &&
+            !IsVehicleInputOnlyGhostState(format)) {
             return ReplayFileReadError::InvalidGhostState;
         }
         const ReplayGhostTrajectoryCreateResult createResult =
@@ -1556,7 +2036,9 @@ ReplayFileReadError ParseReplayStorage(
     }
 
     CGameCtnReplayMapInput mapInput;
-    error = ReadEmbeddedChallenge(sections, &mapInput);
+    ReplayChallengeMetadata challengeMetadata;
+    error = ReadEmbeddedChallenge(
+            sections, &mapInput, &challengeMetadata);
     if (error != ReplayFileReadError::Success) {
         return error;
     }
@@ -1570,6 +2052,7 @@ ReplayFileReadError ParseReplayStorage(
     error = DecodeInputTimeline(
             sections.ghostBuffer,
             ghostSections,
+            challengeMetadata.playMode == EChallengePlayMode::Puzzle,
             &inputTimeline);
     if (error != ReplayFileReadError::Success) {
         return error;
@@ -1587,7 +2070,11 @@ ReplayFileReadError ParseReplayStorage(
             std::move(inputTimeline),
             std::move(ghostTrajectory),
             ghostArchiveMetadata,
-            std::move(mapInput));
+            sections.compatibilityMetadata,
+            std::move(mapInput),
+            std::move(challengeMetadata),
+            std::move(ghostSections.vehicleIdentifier),
+            ghostSections.hasInput);
     return ReplayFileReadError::Success;
 }
 

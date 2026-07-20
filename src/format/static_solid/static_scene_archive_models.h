@@ -12,6 +12,11 @@ class InstalledPackAssetRepository;
 class StaticSolidArchiveReferenceCatalog;
 struct CGameCtnReplayStaticSolidDescriptorDependencyQueue;
 
+enum class CatalogArchiveStaticModelUsage {
+    SceneModel,
+    DependencyOnly,
+};
+
 class CGameCtnReplayArchiveStaticModel {
 public:
     const GmIso4 &WorldIso() const;
@@ -38,6 +43,7 @@ struct StaticSceneArchiveModelSource {
 struct StaticSceneArchiveModelRecord {
     StaticSceneArchiveModelSource source;
     CGameCtnReplayArchiveStaticModel model;
+    bool dependencyOnly = false;
 
     int ConfigureFromBlockInfoMobil(const char *blockName,
                                     CGameCtnBlockInfo *blockInfo,
@@ -47,7 +53,8 @@ struct StaticSceneArchiveModelRecord {
     int ConfigureFromSceneObject(const float sceneIso[12],
                                  u32 treeNodeIndex,
                                  const char *sceneObjectId,
-                                 const char *selectedDescriptorPath);
+                                 const char *selectedDescriptorPath,
+                                 const CHmsItem::Properties *itemProperties);
 };
 
 class CGameCtnReplayArchiveStaticModelCollection {
@@ -58,6 +65,16 @@ public:
     int ForEachModel(Visitor visitor) const {
         for (const StaticSceneArchiveModelRecord &record : records) {
             if (!visitor(record.model)) {
+                return 0;
+            }
+        }
+        return 1;
+    }
+
+    template<typename Visitor>
+    int ForEachRecord(Visitor visitor) const {
+        for (const StaticSceneArchiveModelRecord &record : records) {
+            if (!visitor(record)) {
                 return 0;
             }
         }
@@ -78,6 +95,7 @@ public:
     int AppendIfDescriptorMissing(const StaticSceneArchiveModelRecord &record);
     int ContributeStaticSolidDescriptorDependencies(
             CGameCtnReplayStaticSolidDescriptorDependencyQueue &queue) const;
+    int ResizePrefix(u32 count);
     void Free();
 
 private:
@@ -89,4 +107,5 @@ private:
 
 bool LoadCatalogArchiveStaticModels(
         InstalledPackAssetRepository &assets,
-        CGameCtnReplayArchiveStaticModelCollection &archiveModels);
+        CGameCtnReplayArchiveStaticModelCollection &archiveModels,
+        CatalogArchiveStaticModelUsage usage);

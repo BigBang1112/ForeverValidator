@@ -9,6 +9,7 @@ struct ReplayChallengeBuildReport {
     u32 constructedBlockCount = 0u;
     u32 automaticBaseBlockCount = 0u;
     u32 terrainModifierBlockCount = 0u;
+    u32 removedInitialBlockCount = 0u;
     u32 missingBlockCount = 0u;
     bool complete = false;
 };

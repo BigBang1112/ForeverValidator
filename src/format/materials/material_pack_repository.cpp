@@ -5,6 +5,7 @@
 
 #include "format/pack/installed/byte_buffer.h"
 #include "format/materials/material_archive_decoder.h"
+#include "format/materials/material_render_archive_decoder.h"
 #include "format/pack/installed/plug_file_pack.h"
 #include "format/pack/installed/scene_descriptor_folder_paths.h"
 #include "format/materials/skin_material_remap_catalog.h"
@@ -14,7 +15,21 @@ namespace {
 struct StoredMaterialAsset {
     std::string path;
     MaterialSurfaceDefinition surface;
+    MaterialRenderDefinition render;
 };
+
+std::optional<MaterialAssetDefinition> CopyMaterialAssetDefinition(
+        u32 index,
+        const StoredMaterialAsset &stored) noexcept {
+    try {
+        return MaterialAssetDefinition{
+                MaterialAssetHandle::FromRepositoryIndex(index),
+                stored.surface,
+                stored.render};
+    } catch (const std::bad_alloc &) {
+        return std::nullopt;
+    }
+}
 
 bool ExtractMaterialBytes(const CPlugFilePack &pack,
                           const std::string &path,
@@ -46,37 +61,41 @@ struct MaterialPackRepository::Impl {
     SkinMaterialRemapCatalog remaps;
     bool remapsLoaded = false;
 
-    std::optional<MaterialAssetDefinition> Load(const std::string &path);
+    std::optional<MaterialAssetDefinition> Load(
+            const std::string &path) noexcept;
 };
 
 std::optional<MaterialAssetDefinition> MaterialPackRepository::Impl::Load(
-        const std::string &path) {
-    for (u32 index = 0u; index < assets.size(); ++index) {
-        if (assets[index].path == path) {
-            return MaterialAssetDefinition{
-                    MaterialAssetHandle::FromRepositoryIndex(index),
-                    assets[index].surface};
-        }
-    }
-    if (assets.size() >= UINT32_MAX) {
-        return std::nullopt;
-    }
-    ByteBuffer bytes;
-    if (!ExtractMaterialBytes(pack, path, bytes) ||
-        bytes.Empty() || bytes.Size() > UINT32_MAX) {
-        return std::nullopt;
-    }
-    std::optional<MaterialSurfaceDefinition> surface = DecodeMaterialArchive(
-            bytes.Data(), static_cast<u32>(bytes.Size()));
-    if (!surface) {
-        return std::nullopt;
-    }
+        const std::string &path) noexcept {
     try {
-        assets.push_back({path, *surface});
-        return MaterialAssetDefinition{
-                MaterialAssetHandle::FromRepositoryIndex(
-                        static_cast<u32>(assets.size() - 1u)),
-                *surface};
+        for (u32 index = 0u; index < assets.size(); ++index) {
+            if (assets[index].path == path) {
+                return CopyMaterialAssetDefinition(index, assets[index]);
+            }
+        }
+        if (assets.size() >= UINT32_MAX) {
+            return std::nullopt;
+        }
+        ByteBuffer bytes;
+        if (!ExtractMaterialBytes(pack, path, bytes) ||
+            bytes.Empty() || bytes.Size() > UINT32_MAX) {
+            return std::nullopt;
+        }
+        std::optional<MaterialSurfaceDefinition> surface =
+                DecodeMaterialArchive(
+                        bytes.Data(), static_cast<u32>(bytes.Size()));
+        if (!surface) {
+            return std::nullopt;
+        }
+        MaterialRenderDefinition render;
+        std::optional<MaterialRenderDefinition> decodedRender =
+                DecodeMaterialRenderArchive(pack, path.c_str());
+        if (decodedRender) {
+            render = std::move(*decodedRender);
+        }
+        assets.push_back({path, *surface, std::move(render)});
+        return CopyMaterialAssetDefinition(
+                static_cast<u32>(assets.size() - 1u), assets.back());
     } catch (const std::bad_alloc &) {
         return std::nullopt;
     }
@@ -94,7 +113,8 @@ std::optional<ResolvedMaterialDefinition> MaterialPackRepository::Resolve(
     }
     std::string sourcePath;
     try {
-        sourcePath = SceneDescriptorFolderPaths::StadiumMediaMaterialPrefix();
+        sourcePath = impl_->pack.PackName();
+        sourcePath.append("\\Media\\Material\\");
         sourcePath.append(identifier.data(), identifier.size());
     } catch (const std::bad_alloc &) {
         return std::nullopt;
@@ -128,18 +148,19 @@ std::optional<ResolvedMaterialDefinition> MaterialPackRepository::ResolvePath(
         impl_->remapsLoaded = true;
     }
 
-    ResolvedMaterialDefinition resolved;
-    resolved.material = *source;
-    const std::optional<TerrainModifierDirtRemapPaths> remap =
-            impl_->remaps.FindTerrainModifierDirt(sourcePath);
-    if (!remap) {
+    try {
+        ResolvedMaterialDefinition resolved;
+        resolved.material = *source;
+        const std::optional<DecorationTerrainModifierRemapPath> remap =
+                impl_->remaps.FindDecorationTerrainModifier(sourcePath);
+        if (!remap) {
+            return resolved;
+        }
+        std::optional<MaterialAssetDefinition> target =
+                impl_->Load(remap->target);
+        resolved.remaps.terrainModifierDirt = std::move(target);
         return resolved;
+    } catch (const std::bad_alloc &) {
+        return std::nullopt;
     }
-    std::optional<MaterialAssetDefinition> target =
-            impl_->Load(remap->preferred);
-    if (!target && !remap->fallback.empty()) {
-        target = impl_->Load(remap->fallback);
-    }
-    resolved.remaps.terrainModifierDirt = std::move(target);
-    return resolved;
 }

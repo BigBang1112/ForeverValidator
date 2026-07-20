@@ -17,6 +17,8 @@ enum class ReplayValidationStatus {
     RespawnCountMismatch,
     RespawnExpectationUnavailable,
     ObservationError,
+    IncompatibleReplayVersion,
+    InputUnavailable,
 };
 
 enum class ReplayValidationOutcome {

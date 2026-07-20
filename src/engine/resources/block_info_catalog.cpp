@@ -15,8 +15,93 @@ bool BlockInfoCatalog::Add(BlockInfoCatalogEntry entry) {
     }
 }
 
+BlockInfoCatalogLandZoneHeightResult
+BlockInfoCatalog::ApplyCollectionLandZoneHeights(
+        const std::vector<BlockInfoCatalogLandZoneHeightAssignment> &
+                assignments) {
+    const auto matchesAssignment = [](
+            const BlockInfoCatalogEntry &entry,
+            const BlockInfoCatalogLandZoneHeightAssignment &assignment) {
+        return entry.collection == assignment.collection &&
+               (entry.identifier == assignment.identifier ||
+                (!assignment.alternateIdentifier.empty() &&
+                 entry.identifier == assignment.alternateIdentifier));
+    };
+    for (std::size_t index = 0u; index < assignments.size(); ++index) {
+        const BlockInfoCatalogLandZoneHeightAssignment &assignment =
+                assignments[index];
+        const BlockInfoCatalogEntry *match = nullptr;
+        std::size_t matchCount = 0u;
+        for (const BlockInfoCatalogEntry &entry : entries_) {
+            if (matchesAssignment(entry, assignment)) {
+                match = &entry;
+                ++matchCount;
+            }
+        }
+        if (matchCount == 0u) {
+            return BlockInfoCatalogLandZoneHeightResult::Missing;
+        }
+        if (matchCount != 1u) {
+            return BlockInfoCatalogLandZoneHeightResult::Ambiguous;
+        }
+        for (std::size_t previous = 0u; previous < index; ++previous) {
+            const BlockInfoCatalogLandZoneHeightAssignment &other =
+                    assignments[previous];
+            const BlockInfoCatalogEntry *otherMatch = nullptr;
+            for (const BlockInfoCatalogEntry &entry : entries_) {
+                if (matchesAssignment(entry, other)) {
+                    otherMatch = &entry;
+                    break;
+                }
+            }
+            if (otherMatch != match) {
+                continue;
+            }
+            if (other.blockType != assignment.blockType ||
+                other.height != assignment.height) {
+                return BlockInfoCatalogLandZoneHeightResult::Conflict;
+            }
+            return BlockInfoCatalogLandZoneHeightResult::Duplicate;
+        }
+        if (match->blockType != assignment.blockType) {
+            return BlockInfoCatalogLandZoneHeightResult::TypeMismatch;
+        }
+        if (match->collectionLandZoneHeight.has_value() &&
+            *match->collectionLandZoneHeight != assignment.height) {
+            return BlockInfoCatalogLandZoneHeightResult::Conflict;
+        }
+    }
+
+    for (const BlockInfoCatalogLandZoneHeightAssignment &assignment :
+         assignments) {
+        for (BlockInfoCatalogEntry &entry : entries_) {
+            if (matchesAssignment(entry, assignment)) {
+                entry.collectionLandZoneHeight = assignment.height;
+                break;
+            }
+        }
+    }
+    return BlockInfoCatalogLandZoneHeightResult::Success;
+}
+
 std::size_t BlockInfoCatalog::Size() const {
     return entries_.size();
+}
+
+const std::vector<BlockInfoCatalogEntry> &BlockInfoCatalog::Entries() const {
+    return entries_;
+}
+
+std::size_t BlockInfoCatalog::CollectionLandZoneHeightCount(
+        std::string_view collection) const {
+    std::size_t count = 0u;
+    for (const BlockInfoCatalogEntry &entry : entries_) {
+        if (entry.collection == collection &&
+            entry.collectionLandZoneHeight.has_value()) {
+            ++count;
+        }
+    }
+    return count;
 }
 
 const BlockInfoCatalogEntry *BlockInfoCatalog::FindForBlock(

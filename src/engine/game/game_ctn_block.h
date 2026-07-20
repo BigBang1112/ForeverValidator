@@ -104,6 +104,10 @@ public:
     CSceneMobil *HelperMobil(void) const;
     const std::vector<CMwNodRef<CSceneMobil>> &SubMobils(void) const;
     const std::array<CMwNodRef<CSceneMobil>, 4> &ClipSourceMobils(void) const;
+    const std::array<CMwNodRef<CSceneMobil>, 4> &
+            ClipHelperSourceMobils(void) const;
+    const std::array<CMwNodRef<CSceneMobil>, 4> &
+            ReplayLoadedClipSourceMobils(void) const;
     const std::vector<std::unique_ptr<CGameCtnBlockUnit>> &BlockUnits(void) const;
     CGameCtnBlockUnit *BlockUnitAt(u32 index) const;
     bool HasBlockUnits(void) const;
@@ -135,9 +139,18 @@ public:
     void SetTriggerMobil(CSceneMobil *mobil);
     void SetClipSourceMobils(
             const std::array<CMwNodRef<CSceneMobil>, 4> &mobils);
+    void SetClipHelperSourceMobils(
+            const std::array<CMwNodRef<CSceneMobil>, 4> &mobils);
+    void SetReplayLoadedClipSourceMobils(
+            const std::array<CMwNodRef<CSceneMobil>, 4> &mobils);
     void SetTerrainModifiedId(const CMwId &id);
+    void SetCollectionGrid(float squareSize, float squareHeight);
+    float CollectionSquareSize(void) const;
+    float CollectionSquareHeight(void) const;
 
 private:
+    friend class CGameCtnChallenge;
+
     void ClearMobilOwners(void);
 
     SGameCtnIdentifier identifier;
@@ -149,6 +162,8 @@ private:
     std::vector<CMwNodRef<CSceneMobil>> subMobils;
     CMwNodRef<CSceneMobil> helperMobil;
     std::array<CMwNodRef<CSceneMobil>, 4> clipSourceMobils;
+    std::array<CMwNodRef<CSceneMobil>, 4> clipHelperSourceMobils;
+    std::array<CMwNodRef<CSceneMobil>, 4> replayLoadedClipSourceMobils;
     GmNat3 coord{};
     ECardinalDir direction = ECardinalDir::North;
     CMwId terrainModifiedId;
@@ -159,5 +174,7 @@ private:
     const CGameCtnBlock *suppressingBlock_ = nullptr;
     std::optional<InstanceId> instanceId_;
     float mobilVerticalOffset_ = 0.0f;
+    float collectionSquareSize_ = SquareSize;
+    float collectionSquareHeight_ = SquareHeight;
     BlockPlacementState placement_;
 };

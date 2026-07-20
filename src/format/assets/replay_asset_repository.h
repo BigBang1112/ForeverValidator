@@ -8,6 +8,7 @@
 #include "engine/scene/static_scene_model.h"
 class CGameCtnReplayMapInput;
 class ReplaySceneBlockPlacements;
+class InstalledPackKeyCatalog;
 
 // Runtime-facing access to the assets needed to construct one replay scene.
 // Installed-pack decoding stays behind this interface in src/format.
@@ -20,6 +21,15 @@ public:
             const CGameCtnReplayMapInput &mapInput,
             const ReplaySceneBlockPlacements &placements,
             StaticSceneModelCollection *out) = 0;
+
+    virtual bool BuildStaticSceneWithDecorationAssets(
+            ReplayAssetRepository &decorationAssets,
+            const CGameCtnReplayMapInput &mapInput,
+            const ReplaySceneBlockPlacements &placements,
+            StaticSceneModelCollection *out) {
+        return this == &decorationAssets &&
+               BuildStaticScene(mapInput, placements, out);
+    }
 };
 
 std::unique_ptr<ReplayAssetRepository> OpenReplayAssetRepository(
@@ -27,3 +37,16 @@ std::unique_ptr<ReplayAssetRepository> OpenReplayAssetRepository(
         std::size_t pakByteCount,
         const std::byte *packlistBytes,
         std::size_t packlistByteCount);
+
+std::unique_ptr<ReplayAssetRepository> OpenReplayAssetRepository(
+        const std::byte *pakBytes,
+        std::size_t pakByteCount,
+        const std::byte *packlistBytes,
+        std::size_t packlistByteCount,
+        const char *packName);
+
+std::unique_ptr<ReplayAssetRepository> OpenReplayAssetRepository(
+        const std::byte *pakBytes,
+        std::size_t pakByteCount,
+        const InstalledPackKeyCatalog &keyCatalog,
+        const char *packName);

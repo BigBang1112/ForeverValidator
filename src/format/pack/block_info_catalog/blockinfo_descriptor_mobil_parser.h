@@ -13,6 +13,7 @@ struct BlockInfoDescriptorParseRequest {
     const char *descriptorPath = nullptr;
     const CPlugFilePack *installedPack = nullptr;
     bool continueAfterMainBlockInfoChunk = false;
+    bool *wrongRootPylonChunkOut = nullptr;
 };
 
 struct BlockInfoDescriptorParseOutput {

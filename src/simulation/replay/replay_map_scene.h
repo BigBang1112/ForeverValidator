@@ -55,6 +55,7 @@ private:
     ReplaySceneBlockPlacements blockPlacements_;
     StaticSceneModelCollection models_;
     ReplayStaticCorpusCollection staticCorpuses_;
+    ReplayDedicatedCollisionCorpusCollection dedicatedCollisionCorpuses_;
     CHmsCollisionManagerSZone persistentCollisionZone_{0u, nullptr};
     bool active_ = false;
     bool ready_ = false;

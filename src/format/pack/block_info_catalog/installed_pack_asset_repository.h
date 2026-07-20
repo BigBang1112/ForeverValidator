@@ -5,6 +5,7 @@
 #include <string_view>
 
 #include "format/assets/replay_asset_repository.h"
+class InstalledPackKeyCatalog;
 struct InstalledPackAssetRepositoryAccess;
 
 class InstalledPackAssetRepository final : public ReplayAssetRepository {
@@ -21,6 +22,15 @@ public:
                    std::size_t pakByteCount,
                    const std::byte *packlistBytes,
                    std::size_t packlistByteCount);
+    bool Configure(const std::byte *pakBytes,
+                   std::size_t pakByteCount,
+                   const std::byte *packlistBytes,
+                   std::size_t packlistByteCount,
+                   const char *packName);
+    bool Configure(const std::byte *pakBytes,
+                   std::size_t pakByteCount,
+                   const InstalledPackKeyCatalog &keyCatalog,
+                   const char *packName);
     void Clear();
     bool IsConfigured() const;
 
@@ -34,14 +44,21 @@ public:
             BlockInfoAssetHandle asset) override;
     std::optional<CatalogCollectionDefinition> Collection(
             std::string_view name) override;
+    std::optional<CatalogDecorationSizeDefinition> DecorationSize(
+            const CGameCtnReplayMapInput &mapInput) override;
     bool HasSurfaceReplacement(std::string_view collection,
-                               std::string_view sourceSurface,
-                               std::string_view targetSurface) override;
+                               std::string_view sourceId,
+                               std::string_view targetId) override;
     std::optional<ResolvedMaterialDefinition> ResolveMaterial(
             std::string_view identifier) override;
     std::optional<ResolvedMaterialDefinition> ResolveMaterialPath(
             std::string_view plainPath) override;
     bool BuildStaticScene(
+            const CGameCtnReplayMapInput &mapInput,
+            const ReplaySceneBlockPlacements &placements,
+            StaticSceneModelCollection *out) override;
+    bool BuildStaticSceneWithDecorationAssets(
+            ReplayAssetRepository &decorationAssets,
             const CGameCtnReplayMapInput &mapInput,
             const ReplaySceneBlockPlacements &placements,
             StaticSceneModelCollection *out) override;

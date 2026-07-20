@@ -1,5 +1,7 @@
 #include "engine/game/game_ctn_challenge.h"
 #include <algorithm>
+#include <array>
+#include <cassert>
 #include <cmath>
 #include <limits>
 #include <utility>
@@ -36,12 +38,43 @@ void CGameCtnChallenge::SetMapSize(const GmNat3 &size) {
     mapDepth = size.z;
 }
 
+void CGameCtnChallenge::SetCollectionGrid(
+        float squareSize,
+        float squareHeight) {
+    collectionSquareSize_ = squareSize;
+    collectionSquareHeight_ = squareHeight;
+    for (const std::unique_ptr<CGameCtnBlock> &block : blocks_) {
+        if (block != nullptr) {
+            block->SetCollectionGrid(squareSize, squareHeight);
+        }
+    }
+}
+
 GmNat3 CGameCtnChallenge::MapSize(void) const {
     return {mapWidth, mapHeight, mapDepth};
 }
 
 u32 CGameCtnChallenge::MapHeight(void) const {
     return mapHeight;
+}
+
+float CGameCtnChallenge::CollectionSquareSize(void) const {
+    return collectionSquareSize_;
+}
+
+float CGameCtnChallenge::CollectionSquareHeight(void) const {
+    return collectionSquareHeight_;
+}
+
+void CGameCtnChallenge::ConfigureReplayConstructionData(
+        bool terrainData,
+        bool pylonData) {
+    hasTerrainData = terrainData;
+    hasPylonData = pylonData;
+}
+
+bool CGameCtnChallenge::HasReplayPylonData(void) const {
+    return hasPylonData;
 }
 
 void CGameCtnChallenge::FastInitChallengeData(
@@ -56,20 +89,46 @@ void CGameCtnChallenge::FastInitChallengeData(
         defaultZoneHeight = decoration->Size().defaultZoneHeight;
     }
     InitializeFieldUnitGrid();
-    InitializeZoneGrid(CMwId{}, defaultZoneHeight, true);
+    const CGameCtnZoneFlat *defaultZone = collection != nullptr
+            ? collection->DefaultZone()
+            : nullptr;
+    InitializeZoneGrid(defaultZone != nullptr ? defaultZone->zoneId : CMwId{},
+                       defaultZoneHeight,
+                       true);
     pylonColumns.Reset(mapWidth, mapDepth);
 }
 
 void CGameCtnChallenge::InitChallengeData(const SCtnForcedMods *forcedMods) {
     LoadDecorationAndCollection(forcedMods);
     FastInitChallengeData(collection, decoration);
-    for (const std::unique_ptr<CGameCtnBlock> &block : blocks_) {
-        if (block != nullptr) {
-            UpdateFieldUnits(block.get());
-            CreateMobilForBlock(block.get());
+    CGameCtnZoneFlat *defaultZone = collection != nullptr
+            ? collection->DefaultZone()
+            : nullptr;
+    ConfigureReplayConstructionData(
+            defaultZone != nullptr,
+            defaultZone != nullptr && defaultZone->blockInfoPylon.Get() != nullptr);
+    CreateBlocksAndPylons();
+    for (u32 pass = 0u; pass < 2u; ++pass) {
+        std::size_t index = 0u;
+        while (index < blocks_.size()) {
+            CGameCtnBlock *block = blocks_[index].get();
+            if (block == nullptr ||
+                ((block->GetType() <= EBlockType::Frontier) !=
+                 (pass == 0u))) {
+                ++index;
+                continue;
+            }
+            if (UpdateFieldUnits(block) == 0 && pass != 0u) {
+                if (RemoveBlock(block) == 0) {
+                    ++index;
+                }
+                continue;
+            }
+            CreateMobilForBlock(block);
+            AddBlockToAddList(block);
+            ++index;
         }
     }
-    CreateBlocksAndPylons();
 }
 
 CGameCtnBlock *CGameCtnChallenge::CreateBlock(
@@ -89,9 +148,40 @@ CGameCtnBlock *CGameCtnChallenge::CreateBlock(
             direction,
             variantOrSource,
             isGround,
-            createMobilFlag,
+            blockInfo->Type() == EBlockType::Clip ? 1 : createMobilFlag,
             skin);
-    return AddLoadedBlock(std::move(block));
+
+    CMwId selectedModifier;
+    if (isGround != 0 || blockInfo->Type() == EBlockType::Flat ||
+        blockInfo->Type() == EBlockType::Frontier) {
+        const u32 unitCount = blockInfo->GetNbBlockUnitInfos(isGround);
+        for (u32 index = 0u; index < unitCount; ++index) {
+            const GmNat3 offset = blockInfo->GetRotatedOffset(
+                    index, direction, isGround);
+            const CMwId candidate = GetColumnModifierId(
+                    {coord.x + offset.x,
+                     coord.y + offset.y,
+                     coord.z + offset.z});
+            if (!candidate.IsInvalid()) {
+                selectedModifier = candidate;
+            }
+        }
+    }
+    if (!selectedModifier.IsInvalid()) {
+        block->SetTerrainModifiedId(selectedModifier);
+        block->SetMaterialRemaps(false, true);
+    }
+
+    CGameCtnBlock *created = AddLoadedBlock(std::move(block));
+    if (created == nullptr) {
+        return nullptr;
+    }
+    if (!fieldUnitColumns.empty()) {
+        UpdateFieldUnits(created);
+    }
+    CreateMobilForBlock(created);
+    AddBlockToAddList(created);
+    return created;
 }
 
 CGameCtnBlock *CGameCtnChallenge::AddLoadedBlock(
@@ -99,12 +189,10 @@ CGameCtnBlock *CGameCtnChallenge::AddLoadedBlock(
     if (block == nullptr || block->BlockInfoRef() == nullptr) {
         return nullptr;
     }
+    block->SetCollectionGrid(
+            collectionSquareSize_, collectionSquareHeight_);
     CGameCtnBlock *created = block.get();
     blocks_.push_back(std::move(block));
-    if (!fieldUnitColumns.empty()) {
-        UpdateFieldUnits(created);
-    }
-    CreateMobilForBlock(created);
     return created;
 }
 
@@ -113,18 +201,273 @@ void CGameCtnChallenge::CreateMobilForBlock(CGameCtnBlock *block) {
         return;
     }
     if (block->GetType() == EBlockType::Clip) {
+        bool usesReplacementMaterialRemap = false;
+        if (block->UsesGroundMobilSize() && collection != nullptr) {
+            CGameCtnBlockUnit *firstUnit = block->BlockUnitAt(0u);
+            const GmNat3 baseCoord = block->BaseCoord();
+            const GmNat3 unitCoord = firstUnit != nullptr
+                    ? firstUnit->GetCoord()
+                    : baseCoord;
+            CGameCtnZone *realZone = GetRealZone(unitCoord);
+            if (firstUnit != nullptr && realZone != nullptr) {
+                const CMwId targetSurface = GetRealZoneId(unitCoord);
+                CMwId sourceSurface(targetSurface);
+                for (u32 sideIndex = 0u; sideIndex < 4u; ++sideIndex) {
+                    const ECardinalDir side =
+                            static_cast<ECardinalDir>(sideIndex);
+                    CGameCtnBlockInfoClip *junction =
+                            GetNeighbourBlockUnitJunction(baseCoord, side);
+                    if (junction == nullptr ||
+                        junction->GetNbBlockUnitInfos(1) == 0u) {
+                        continue;
+                    }
+                    CGameCtnBlockUnitInfo *junctionUnit =
+                            junction->GetBlockUnitInfo(0u, 1);
+                    if (junctionUnit == nullptr) {
+                        continue;
+                    }
+                    const CMwId candidate = junctionUnit->GetSurface();
+                    if (candidate != targetSurface) {
+                        sourceSurface = candidate;
+                    }
+                }
+                if (sourceSurface != targetSurface &&
+                    GetReplacementIndex(sourceSurface, targetSurface) !=
+                            static_cast<unsigned long>(
+                                    std::numeric_limits<
+                                            std::uint32_t>::max())) {
+                    usesReplacementMaterialRemap = true;
+                }
+            }
+        }
+        block->SetMaterialRemaps(
+                usesReplacementMaterialRemap,
+                block->UsesDecorationSkinMaterialRemap());
         CreateMobilForClip(block);
         return;
     }
     block->CreateBlockMobil(0, 0);
-    AddBlockToAddList(block);
 }
 
 void CGameCtnChallenge::CreateMobilForClip(CGameCtnBlock *block) {
-    if (block != nullptr) {
-        block->CreateBlockMobil(0, 0);
-        AddBlockToAddList(block);
+    if (block == nullptr) {
+        return;
     }
+
+    const bool preserveLoadedSources =
+            block->SourceAsset().IsValid() &&
+            (block->Origin() ==
+                     CGameCtnBlock::PlacementOrigin::TerrainModifier ||
+             block->Origin() == CGameCtnBlock::PlacementOrigin::
+                                        AutomaticBaseTerrainModifier);
+    const auto &loadedPrimarySources =
+            block->ReplayLoadedClipSourceMobils();
+    const std::array<CMwNodRef<CSceneMobil>, 4> noSources{};
+    block->SetClipSourceMobils(noSources);
+    block->SetClipHelperSourceMobils(noSources);
+    block->SetMobilAndHelper(nullptr, nullptr, nullptr);
+    if (collection == nullptr) {
+        return;
+    }
+    // United only assembles clip faces that have an attached block unit.  A
+    // descriptor with no units still reaches CreateMobilForClip during map
+    // loading, but its face buffer is empty and therefore produces no
+    // primary/helper sources or main mobil.
+    if (!block->HasBlockUnits()) {
+        return;
+    }
+
+    CGameCtnZoneFlat *defaultZone = collection->DefaultZone();
+    CGameCtnBlockInfo *defaultClipNod = defaultZone != nullptr
+            ? defaultZone->blockInfoClip.Get()
+            : nullptr;
+    CGameCtnBlockInfoClip *defaultClip =
+            dynamic_cast<CGameCtnBlockInfoClip *>(defaultClipNod);
+    const GmNat3 coord = block->BaseCoord();
+    CGameCtnBlock *landBlock =
+            GetBlockFromPlayField({coord.x, 0u, coord.z});
+    if (landBlock == nullptr || RealZoneForBlock(landBlock) == nullptr) {
+        return;
+    }
+
+    CGameCtnBlockInfoClip *selectedClip = nullptr;
+    if (IsFullUnderground(coord) != 0) {
+        selectedClip = defaultClip;
+    } else {
+        const CMwId realId = GetRealZoneId(coord);
+        CGameCtnZone *realZone = collection->GetZone(realId);
+        if (realZone == nullptr) {
+            return;
+        }
+
+        CGameCtnZoneFlat *selectedZone = nullptr;
+        if (dynamic_cast<CGameCtnZoneFrontier *>(realZone) == nullptr) {
+            selectedZone = collection->GetZoneFlat(realId);
+        } else {
+            if (block->UsesGroundMobilSize()) {
+                return;
+            }
+            selectedZone = collection->GetBasicZone(realId);
+        }
+        if (selectedZone == nullptr) {
+            return;
+        }
+
+        CGameCtnBlockInfo *selectedClipNod =
+                selectedZone->blockInfoClip.Get();
+        selectedClip = selectedClipNod != nullptr
+                ? dynamic_cast<CGameCtnBlockInfoClip *>(selectedClipNod)
+                : defaultClip;
+    }
+    if (selectedClip == nullptr) {
+        return;
+    }
+
+    const bool isGround = block->UsesGroundMobilSize();
+    const int mobilFamily = isGround
+            ? CGameCtnBlockInfo::GroundMobilFamily
+            : CGameCtnBlockInfo::AirMobilFamily;
+    const unsigned long variant = block->VariantIndex() & 0x3fu;
+    std::array<CMwNodRef<CSceneMobil>, 4> primarySources{};
+    std::array<CMwNodRef<CSceneMobil>, 4> helperSources{};
+    bool hasPrimary = false;
+    bool hasHelper = false;
+    CGameCtnBlockUnit *firstUnit = block->BlockUnitAt(0u);
+
+    for (u32 sideIndex = 0u; sideIndex < primarySources.size(); ++sideIndex) {
+        const ECardinalDir side = static_cast<ECardinalDir>(sideIndex);
+        CGameCtnBlockInfoClip *sideClip = selectedClip;
+        const GmNat3 neighbourCoord =
+                CGameCtnUtils::GetNeighbourCoord(coord, side);
+        CGameCtnBlock *neighbour = GetBlockFromPlayField(neighbourCoord);
+        if (neighbour != nullptr &&
+            !neighbour->IsType(EBlockType::Road) &&
+            !neighbour->IsType(EBlockType::Clip)) {
+            CGameCtnBlockInfoClip *junction =
+                    GetNeighbourBlockUnitJunction(coord, side);
+            if (junction != nullptr) {
+                sideClip = junction;
+            }
+        }
+
+        if (firstUnit != nullptr) {
+            firstUnit->junctions_[sideIndex] = sideClip;
+            sideClip = firstUnit->junctions_[sideIndex];
+        }
+
+        CSceneMobil *primary = preserveLoadedSources
+                ? loadedPrimarySources[sideIndex].Get()
+                : nullptr;
+        if (primary == nullptr) {
+            primary = sideClip->GetMobil(mobilFamily, variant, 0u);
+        }
+        if (primary == nullptr) {
+            continue;
+        }
+        primarySources[sideIndex] = primary;
+        hasPrimary = true;
+
+        CSceneMobil *helper =
+                sideClip->FamilyHelperMobilSource(isGround);
+        if (helper != nullptr) {
+            helperSources[sideIndex] = helper;
+            hasHelper = true;
+        }
+    }
+
+    block->SetClipSourceMobils(primarySources);
+    block->SetClipHelperSourceMobils(helperSources);
+    if (hasPrimary) {
+        CMwNodRef<CSceneMobil> mainMobil = MakeMwNod<CSceneMobil>();
+        CMwNodRef<CSceneMobil> helperMobil = hasHelper
+                ? MakeMwNod<CSceneMobil>()
+                : CMwNodRef<CSceneMobil>{};
+        block->SetMobilAndHelper(
+                mainMobil.Get(), helperMobil.Get(), nullptr);
+    }
+}
+
+int CGameCtnChallenge::UpdateClip(GmNat3 coord) {
+    CGameCtnBlock *block = GetBlockFromPlayField(coord);
+    if (block != nullptr) {
+        if (!block->IsType(EBlockType::Clip)) {
+            return 0;
+        }
+        (void)RemoveBlock(block);
+    }
+
+    const int isGround =
+            GetTerrainFromPlayField(coord) == ETerrain::Ground ? 1 : 0;
+    CGameCtnBlock *landBlock =
+            GetBlockFromPlayField({coord.x, 0u, coord.z});
+    if (collection == nullptr || landBlock == nullptr ||
+        RealZoneForBlock(landBlock) == nullptr) {
+        return 0;
+    }
+
+    const CMwId realId = GetRealZoneId(coord);
+    CGameCtnZoneFlat *basicZone = collection->GetBasicZone(realId);
+    if (basicZone == nullptr) {
+        return 0;
+    }
+    const CMwId basicZoneId = basicZone->zoneId;
+    CGameCtnZoneFlat *flatZone = collection->GetZoneFlat(basicZoneId);
+    if (flatZone == nullptr) {
+        return 0;
+    }
+
+    CGameCtnBlockInfo *selectedClipNod = flatZone->blockInfoClip.Get();
+    CGameCtnBlockInfoClip *selectedDefaultClip =
+            dynamic_cast<CGameCtnBlockInfoClip *>(selectedClipNod);
+    if (selectedDefaultClip == nullptr) {
+        CGameCtnZoneFlat *defaultZone = collection->DefaultZone();
+        CGameCtnBlockInfo *defaultClipNod = defaultZone != nullptr
+                ? defaultZone->blockInfoClip.Get()
+                : nullptr;
+        selectedDefaultClip =
+                dynamic_cast<CGameCtnBlockInfoClip *>(defaultClipNod);
+    }
+    if (selectedDefaultClip == nullptr) {
+        return 0;
+    }
+
+    bool requiresReplacement = false;
+    for (u32 sideIndex = 0u; sideIndex < 4u; ++sideIndex) {
+        const ECardinalDir side = static_cast<ECardinalDir>(sideIndex);
+        CGameCtnBlockInfoClip *junction =
+                GetNeighbourBlockUnitJunction(coord, side);
+        const GmNat3 neighbourCoord =
+                CGameCtnUtils::GetNeighbourCoord(coord, side);
+        CGameCtnBlock *neighbour = GetBlockFromPlayField(neighbourCoord);
+        if (junction != nullptr && neighbour != nullptr &&
+            !junction->IsClipCompatible(selectedDefaultClip) &&
+            !neighbour->IsType(EBlockType::Road) &&
+            (selectedDefaultClip->GetMobil(isGround, 0u, 0u) != nullptr ||
+             junction->GetMobil(isGround, 0u, 0u) != nullptr)) {
+            requiresReplacement = true;
+            break;
+        }
+    }
+    if (!requiresReplacement) {
+        return 1;
+    }
+
+    CGameCtnZone *realZone = GetRealZone(coord);
+    if (dynamic_cast<CGameCtnZoneFrontier *>(realZone) != nullptr &&
+        IsFullUnderground(coord) == 0 &&
+        coord.y <= static_cast<u32>(GetZoneHeight(coord)) + 1u) {
+        return 0;
+    }
+
+    (void)CreateBlock(
+            selectedDefaultClip,
+            coord,
+            ECardinalDir::North,
+            0u,
+            isGround,
+            1,
+            nullptr);
+    return 1;
 }
 
 CGameCtnBlockInfo &CGameCtnChallenge::OwnBlockInfo(
@@ -139,14 +482,174 @@ CGameCtnChallenge::Blocks(void) const {
     return blocks_;
 }
 
+bool CGameCtnChallenge::IsActiveBlock(const CGameCtnBlock *block) const {
+    return block != nullptr && std::any_of(
+            blocks_.begin(),
+            blocks_.end(),
+            [block](const std::unique_ptr<CGameCtnBlock> &owned) {
+                return owned.get() == block;
+            });
+}
+
+void CGameCtnChallenge::RegisterBlockSuppression(
+        CGameCtnBlock *target,
+        const CGameCtnBlock *suppressor) {
+    if (target == nullptr || suppressor == nullptr || target == suppressor ||
+        !IsActiveBlock(target) || !IsActiveBlock(suppressor)) {
+        return;
+    }
+    const auto existing = std::find_if(
+            blockSuppressionCandidates_.begin(),
+            blockSuppressionCandidates_.end(),
+            [target, suppressor](const BlockSuppressionCandidate &candidate) {
+                return candidate.target == target &&
+                       candidate.suppressor == suppressor;
+            });
+    if (existing == blockSuppressionCandidates_.end()) {
+        blockSuppressionCandidates_.push_back({target, suppressor});
+    }
+    if (!target->IsSuppressed()) {
+        target->SuppressBy(*suppressor);
+    }
+}
+
+void CGameCtnChallenge::CopyBlockSuppressionCandidates(
+        CGameCtnBlock *target,
+        const CGameCtnBlock *source) {
+    if (target == nullptr || source == nullptr || !IsActiveBlock(target)) {
+        return;
+    }
+    std::vector<const CGameCtnBlock *> suppressors;
+    for (const BlockSuppressionCandidate &candidate :
+         blockSuppressionCandidates_) {
+        if (candidate.target == source) {
+            suppressors.push_back(candidate.suppressor);
+        }
+    }
+    if (suppressors.empty() && source->SuppressingBlock() != nullptr) {
+        suppressors.push_back(source->SuppressingBlock());
+    }
+    for (const CGameCtnBlock *suppressor : suppressors) {
+        RegisterBlockSuppression(target, suppressor);
+    }
+}
+
+void CGameCtnChallenge::RebindSuppressedBlocksAfterRemoval(
+        CGameCtnBlock *block) {
+    for (const std::unique_ptr<CGameCtnBlock> &owned : blocks_) {
+        CGameCtnBlock *target = owned.get();
+        if (target == nullptr || target == block ||
+            target->SuppressingBlock() != block) {
+            continue;
+        }
+        target->ClearSuppression();
+        const auto replacement = std::find_if(
+                blockSuppressionCandidates_.begin(),
+                blockSuppressionCandidates_.end(),
+                [this, target, block](
+                        const BlockSuppressionCandidate &candidate) {
+                    return candidate.target == target &&
+                           candidate.suppressor != block &&
+                           IsActiveBlock(candidate.suppressor);
+                });
+        if (replacement != blockSuppressionCandidates_.end()) {
+            target->SuppressBy(*replacement->suppressor);
+        }
+    }
+    blockSuppressionCandidates_.erase(
+            std::remove_if(
+                    blockSuppressionCandidates_.begin(),
+                    blockSuppressionCandidates_.end(),
+                    [block](const BlockSuppressionCandidate &candidate) {
+                        return candidate.target == block ||
+                               candidate.suppressor == block;
+                    }),
+            blockSuppressionCandidates_.end());
+}
+
+void CGameCtnChallenge::ReleaseRetiredBlockOwnersAfterMobilRemoval(void) {
+    ReleaseRetiredBlockOwnersAfterMobilRemovalIf(
+            [](const CGameCtnBlock &) { return true; });
+}
+
+void CGameCtnChallenge::ReleaseRetiredBlockOwnersAfterMobilRemovalIf(
+        const std::function<bool(const CGameCtnBlock &)> &canRelease) {
+    if (!mobilsToRemove.empty()) {
+        return;
+    }
+    for (const BlockSuppressionCandidate &candidate :
+         blockSuppressionCandidates_) {
+        assert(IsActiveBlock(candidate.target));
+        assert(IsActiveBlock(candidate.suppressor));
+    }
+    for (const std::unique_ptr<CGameCtnBlock> &owned : blocks_) {
+        const CGameCtnBlock *suppressor = owned != nullptr
+                ? owned->SuppressingBlock()
+                : nullptr;
+        assert(suppressor == nullptr ||
+               std::none_of(
+                       retiredBlocks_.begin(),
+                       retiredBlocks_.end(),
+                       [suppressor](
+                               const std::unique_ptr<CGameCtnBlock> &retired) {
+                           return retired.get() == suppressor;
+                       }));
+    }
+    retiredBlocks_.erase(
+            std::remove_if(
+                    retiredBlocks_.begin(),
+                    retiredBlocks_.end(),
+                    [&canRelease](
+                            const std::unique_ptr<CGameCtnBlock> &block) {
+                        return block == nullptr || canRelease(*block);
+                    }),
+            retiredBlocks_.end());
+}
+
+void CGameCtnChallenge::UpdateBlockMobils(void) {
+    ++blockMobilUpdateSerial_;
+}
+
+u32 CGameCtnChallenge::BlockMobilUpdateSerial(void) const {
+    return blockMobilUpdateSerial_;
+}
+
 void CGameCtnChallenge::ClearConstructedBlocks(void) {
     blocksToAdd.clear();
+    pylonsToAdd.clear();
+    mobilsToRemove.clear();
+    blockSuppressionCandidates_.clear();
     blocks_.clear();
+    retiredBlocks_.clear();
     ownedBlockInfos_.clear();
+    blockMobilUpdateSerial_ = 0u;
 }
 
 CGameCtnBlockInfo *CGameCtnChallenge::GetDescFromBlock(CGameCtnBlock *block) {
     return block->BlockInfoRef();
+}
+
+int CGameCtnChallenge::CheckTerrainBlock(CGameCtnBlock *block) {
+    if (block == nullptr || collection == nullptr) {
+        return 0;
+    }
+    CGameCtnZone *zone =
+            collection->GetZoneFromLandBlockInfo(block->BlockInfoRef());
+    if (zone == nullptr ||
+        (!zone->oldZone &&
+         (dynamic_cast<CGameCtnZoneFrontier *>(zone) == nullptr ||
+          block->coord.y != 0u))) {
+        return 0;
+    }
+    CGameCtnZone *upToDateZone = collection->GetUpToDateZone(zone);
+    CGameCtnBlockInfo *upToDateInfo =
+            upToDateZone != nullptr ? upToDateZone->GetZoneInfo() : nullptr;
+    if (upToDateInfo == nullptr) {
+        return 0;
+    }
+    block->SetOldBlockInfo(upToDateInfo);
+    block->coord.y = zone->height;
+    return 1;
 }
 
 uint8_t CGameCtnChallenge::GetNeighbourPylonIndex(uint8_t index) {
@@ -212,21 +715,22 @@ namespace {
 
 void RaisePylonVisualProvider(
         CPlugVisual *provider,
-        uint32_t variantIndex) {
+        uint32_t variantIndex,
+        float squareHeight) {
     if (provider != nullptr) {
         if (auto *visual3D = dynamic_cast<CPlugVisual3D *>(provider)) {
-            visual3D->TranslatePylonGeometry(variantIndex, SQUARE_HEIGHT);
+            visual3D->TranslatePylonGeometry(variantIndex, squareHeight);
         }
     }
 }
 
 void RaisePylonMeshSurface(
         CPlugSurface *surface,
-        uint32_t variantIndex) {
+        uint32_t variantIndex,
+        float squareHeight) {
     if (surface == nullptr) {
         return;
     }
-    const float squareHeight = SQUARE_HEIGHT;
     const float delta =
             squareHeight * Binary32::FromUnsignedInteger(variantIndex);
     surface->TranslateMeshVerticesAbove(squareHeight * 0.5f, delta);
@@ -286,7 +790,8 @@ CSceneMobil *CGameCtnChallenge::CreateNewPylonMobil(
                 0);
         RaisePylonVisualProvider(
                 duplicatedVisual.get(),
-                variantIndex);
+                variantIndex,
+                collectionSquareHeight_);
         duplicatedVisual.release();
     }
 
@@ -312,7 +817,8 @@ CSceneMobil *CGameCtnChallenge::CreateNewPylonMobil(
         surfaceTree->SetSurface(duplicatedSurface.get());
         RaisePylonMeshSurface(
                 duplicatedSurface.get(),
-                variantIndex);
+                variantIndex,
+                collectionSquareHeight_);
         duplicatedSurface.release();
     }
 
@@ -444,11 +950,15 @@ void CGameCtnChallenge::UpdateColumnMobils(GmNat3 coord) {
             }
             std::unique_ptr<CSceneMobil> mobil(
                     sourceMobil->CreateModelInstance());
-            if (mobil == nullptr || mobil->GetTree() == nullptr) {
+            if (mobil == nullptr ||
+                (mobil->GetTree() == nullptr &&
+                 !mobil->StaticSolidAsset().IsSpecified())) {
                 continue;
             }
             CPlugTree *tree = mobil->GetTree();
-            tree->SetModelInstance(true);
+            if (tree != nullptr) {
+                tree->SetModelInstance(true);
+            }
             column->SetMobil(mobil.get());
             CSceneMobil *mobilResult = mobil.release();
             AddPylonToAddList(
@@ -505,7 +1015,6 @@ void CGameCtnChallenge::CreateBlocksAndPylons(void) {
         pylonBlockInfo->UpdateGroundMobilArray(groundMobilCount);
     }
 }
-
 
 void CGameCtnChallenge::LoadDecorationAndCollection(
         const SCtnForcedMods *forcedMods) {
@@ -905,7 +1414,9 @@ int CGameCtnChallenge::UpdateFieldUnits(CGameCtnBlock *block) {
 
         CGameCtnBlockUnitInfo *unitInfo = desc->FirstBlockUnitInfo(isGround);
         const GmNat3 offset = RotatedBlockUnitOffset(*desc, 0u, ctnBlock->Direction(), isGround);
-        const GmNat3 coord = AbsoluteBlockUnitCoord(*ctnBlock, offset);
+        // Landscape units identify the column at y=0; the block coordinate
+        // separately stores the visible zone height.
+        const GmNat3 coord{blockX, 0u, blockZ};
         CGameCtnBlockUnit *newUnit = AttachPlacedBlockUnit(
                 ctnBlock,
                 unitInfo,
@@ -1202,7 +1713,8 @@ SZoneGenealogy *CGameCtnChallenge::GetZoneGenealogy(GmNat3 coord) {
 
 
 CGameCtnZone *CGameCtnChallenge::GetRealZone(GmNat3 coord) {
-    return RealZoneForBlock(GetBlockFromPlayField(coord));
+    return RealZoneForBlock(
+            GetBlockFromPlayField({coord.x, 0u, coord.z}));
 }
 
 
@@ -1542,10 +2054,143 @@ void CGameCtnChallenge::AddBlockToRemoveList(
         return;
     }
     AddMobilToRemoveList(block->MainMobil());
-    AddMobilToRemoveList(block->HelperMobil());
+    AddMobilToRemoveList(block->TriggerMobil());
     for (const CMwNodRef<CSceneMobil> &subMobil : block->SubMobils()) {
         AddMobilToRemoveList(subMobil.Get());
     }
+}
+
+void CGameCtnChallenge::ReplaceBlock(CGameCtnBlock *block) {
+    if (block == nullptr || block->BlockInfoRef() == nullptr) {
+        return;
+    }
+
+    CMwId columnModifier;
+    if (block->UsesGroundMobilSize() ||
+        block->GetType() == EBlockType::Flat ||
+        block->GetType() == EBlockType::Frontier) {
+        for (const std::unique_ptr<CGameCtnBlockUnit> &unit :
+             block->BlockUnits()) {
+            if (unit == nullptr) {
+                continue;
+            }
+            // United repeats this exact full BaseCoord probe once per
+            // existing unit; it does not reuse CreateBlock's rotated probes.
+            CMwId candidate = GetColumnModifierId(block->BaseCoord());
+            if (!candidate.IsInvalid()) {
+                columnModifier = candidate;
+            }
+        }
+    }
+
+    if (columnModifier == block->GetTerrainModifiedId()) {
+        return;
+    }
+    AddBlockToRemoveList(block);
+    block->SetTerrainModifiedId(columnModifier);
+    CreateMobilForBlock(block);
+    AddBlockToAddList(block);
+}
+
+int CGameCtnChallenge::RemoveBlock(CGameCtnBlock *block) {
+    if (block == nullptr || block->BlockInfoRef() == nullptr) {
+        return 0;
+    }
+
+    const auto active = std::find_if(
+            blocks_.begin(),
+            blocks_.end(),
+            [block](const std::unique_ptr<CGameCtnBlock> &owned) {
+                return owned.get() == block;
+            });
+    if (active == blocks_.end()) {
+        return 0;
+    }
+
+    struct RemovedBlockUnit {
+        CGameCtnBlockUnit *unit = nullptr;
+        GmNat3 coord{};
+    };
+    std::vector<RemovedBlockUnit> removedUnits;
+    removedUnits.reserve(block->BlockUnits().size());
+    for (const std::unique_ptr<CGameCtnBlockUnit> &ownedUnit :
+         block->BlockUnits()) {
+        CGameCtnBlockUnit *unit = ownedUnit.get();
+        if (unit != nullptr) {
+            removedUnits.push_back({unit, unit->GetCoord()});
+        }
+    }
+
+    for (const RemovedBlockUnit &removedUnit : removedUnits) {
+        CGameCtnBlockUnit *unit = removedUnit.unit;
+        const GmNat3 coord = removedUnit.coord;
+        CGameCtnFieldUnit *fieldUnit = GetFieldUnit(coord);
+        unit->DisconnectFromField();
+
+        if (block->GetType() == EBlockType::Flat ||
+            block->GetType() == EBlockType::Frontier) {
+            SetFieldTerrain(
+                    GetFieldUnit({coord.x, 0u, coord.z}),
+                    ETerrain::Underground);
+            SetFieldTerrain(
+                    GetFieldUnit({coord.x, 1u, coord.z}),
+                    ETerrain::Ground);
+            for (u32 y = 2u; y < mapHeight; ++y) {
+                CGameCtnFieldUnit *columnUnit =
+                        GetFieldUnit({coord.x, y, coord.z});
+                if (columnUnit == nullptr) {
+                    break;
+                }
+                SetFieldTerrain(columnUnit, ETerrain::Air);
+            }
+        } else if (fieldUnit != nullptr &&
+                   fieldUnit->Terrain() == ETerrain::Ground) {
+            const GmNat3 groundCoord{coord.x, 0u, coord.z};
+            CGameCtnBlock *groundBlock =
+                    GetBlockFromPlayField(groundCoord);
+            AddBlockToAddList(groundBlock);
+            if (groundBlock != nullptr &&
+                groundBlock->GetTerrainModifiedId() !=
+                        GetColumnModifierId(groundCoord)) {
+                ReplaceBlock(groundBlock);
+            }
+        }
+
+        CGameCtnFieldUnit *higherFieldUnit = coord.y + 1u < mapHeight
+                ? GetFieldUnit({coord.x, coord.y + 1u, coord.z})
+                : nullptr;
+        if (higherFieldUnit == nullptr) {
+            GmNat3 pruneCoord = coord;
+            while (pruneCoord.y > 1u) {
+                CGameCtnFieldUnit *candidate = GetFieldUnit(pruneCoord);
+                FieldUnitColumn &column =
+                        fieldUnitColumns[GridIndex(
+                                pruneCoord.x, pruneCoord.z)];
+                if (candidate == nullptr ||
+                    candidate->BlockUnitRef() != nullptr ||
+                    candidate->Terrain() != ETerrain::Air ||
+                    pruneCoord.y + 1u != column.size()) {
+                    break;
+                }
+                const std::size_t previousSize = column.size();
+                RemoveFieldUnit(pruneCoord);
+                if (column.size() + 1u != previousSize) {
+                    break;
+                }
+                --pruneCoord.y;
+            }
+        }
+    }
+
+    AddBlockToRemoveList(block);
+    RebindSuppressedBlocksAfterRemoval(block);
+    retiredBlocks_.push_back(std::move(*active));
+    blocks_.erase(active);
+
+    for (const RemovedBlockUnit &removedUnit : removedUnits) {
+        UpdatePylons(removedUnit.coord);
+    }
+    return 1;
 }
 
 

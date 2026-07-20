@@ -6,9 +6,8 @@
 
 class CPlugFilePack;
 
-struct TerrainModifierDirtRemapPaths {
-    std::string preferred;
-    std::string fallback;
+struct DecorationTerrainModifierRemapPath {
+    std::string target;
 };
 
 class SkinMaterialRemapCatalog {
@@ -21,7 +20,8 @@ public:
             const SkinMaterialRemapCatalog &) = delete;
 
     bool Load(const CPlugFilePack &pack);
-    std::optional<TerrainModifierDirtRemapPaths> FindTerrainModifierDirt(
+    std::optional<DecorationTerrainModifierRemapPath>
+    FindDecorationTerrainModifier(
             const std::string &sourceMaterialPath) const;
 
 private:

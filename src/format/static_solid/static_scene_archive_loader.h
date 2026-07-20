@@ -19,6 +19,12 @@ class InstalledPackAssetRepository;
 struct CGameCtnReplayMapInput;
 struct CGameCtnReplayStaticSolidDescriptorDependency;
 struct CGameCtnReplayStaticSolidDescriptorDependencyQueue;
+
+enum class ReplayStaticArchiveRole {
+    Complete,
+    Map,
+    Decoration,
+};
 class ReplaySceneBlockPlacements;
 class StaticSolidArchiveLoadSession;
 class MaterialAssetRepository;
@@ -94,6 +100,7 @@ public:
 struct StaticSolidArchivePayload {
     u32 descriptorIndex;
     u32 loaderArgument;
+    u32 descriptorClassId;
     u32 payloadOffsetRel;
     u32 payloadOffsetAbs;
     u32 sourceByteCount;
@@ -124,6 +131,7 @@ struct StaticSolidArchivePayload {
     int MatchesSelectedDescriptor(const char *selectedDescriptorPath) const;
     const char *PlainPackPath() const;
     const char *SelectedDescriptorPath() const;
+    u32 DescriptorClassId() const;
     int IsEncrypted() const;
     int IsCompressed() const;
     int IsDecoded() const;
@@ -151,6 +159,7 @@ private:
 struct StaticSolidArchiveRollback {
 private:
     CGameCtnReplayStaticSolidArchiveGraphRollbackMark archiveGraphMark;
+    std::optional<u32> archiveModelCount;
 
     friend class StaticSolidArchiveLoadSession;
 };
@@ -217,7 +226,8 @@ class StaticSolidArchiveLoadSession {
     int DecodeAndAppendArchive(
             StaticSolidArchivePayload payloadAsset,
             CGameCtnReplayArchiveStaticModelCollection *archiveModels,
-            CGameCtnReplayStaticSolidDescriptorDependencyQueue *dependencyQueue);
+            CGameCtnReplayStaticSolidDescriptorDependencyQueue *dependencyQueue,
+            int required);
     const StaticSolidArchivePayload *PayloadFor(
             StaticSolidArchiveId payload) const;
     StaticSolidArchiveDecodedBytes DecodedPayloadBytes(
@@ -274,6 +284,7 @@ public:
         const CGameCtnReplayMapInput &mapInput;
         const ReplaySceneBlockPlacements &placements;
         CGameCtnReplayArchiveStaticModelCollection &archiveModels;
+        ReplayStaticArchiveRole role = ReplayStaticArchiveRole::Complete;
     };
 
     struct ReplayArchiveResult {
@@ -284,9 +295,12 @@ public:
     ReplayArchiveResult LoadReplayArchives(
             const ReplayArchiveRequest &request);
     StaticSolidArchiveRollback
-    MarkDecodedArchiveTail() const;
+    MarkDecodedArchiveTail(
+            const CGameCtnReplayArchiveStaticModelCollection *archiveModels =
+                    nullptr) const;
     int RestoreDecodedArchiveTail(
-            const StaticSolidArchiveRollback &mark);
+            const StaticSolidArchiveRollback &mark,
+            CGameCtnReplayArchiveStaticModelCollection *archiveModels = nullptr);
     const CPlugFilePack *ExternalPack() const;
 };
 
@@ -302,4 +316,11 @@ struct StaticSceneArchiveLoad {
             InstalledPackAssetRepository &installedPackAssets,
             const CGameCtnReplayMapInput &mapInput,
             const ReplaySceneBlockPlacements &placements);
+    int BuildMap(
+            InstalledPackAssetRepository &installedPackAssets,
+            const CGameCtnReplayMapInput &mapInput,
+            const ReplaySceneBlockPlacements &placements);
+    int BuildDecoration(
+            InstalledPackAssetRepository &installedPackAssets,
+            const CGameCtnReplayMapInput &mapInput);
 };

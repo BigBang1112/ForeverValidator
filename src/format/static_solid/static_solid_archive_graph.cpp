@@ -106,7 +106,7 @@ CGameCtnReplayStaticSolidArchiveNamedTree::SurfaceGeom() const {
 
 int CGameCtnReplayStaticSolidArchiveNamedTree::
 HasSurfaceGeometry() const {
-    return state != nullptr && geom != nullptr && geom->SurfType() == 1u;
+    return state != nullptr && geom != nullptr;
 }
 
 void CGameCtnReplayStaticSolidArchiveNode::Install(
@@ -877,6 +877,10 @@ u32 CGameCtnReplayStaticSolidArchiveNodeDirectory::Count() const {
     return nodes.Count();
 }
 
+u32 CGameCtnReplayStaticSolidArchiveNodeDirectory::TreeIdNameCount() const {
+    return treeIdNames.Count();
+}
+
 int CGameCtnReplayStaticSolidArchiveNodeDirectory::Empty() const {
     return nodes.Count() == 0u;
 }
@@ -893,6 +897,11 @@ int CGameCtnReplayStaticSolidArchiveNodeDirectory::Add(
 
 int CGameCtnReplayStaticSolidArchiveNodeDirectory::ResizePrefix(u32 count) {
     return nodes.ResizePrefix(count);
+}
+
+int CGameCtnReplayStaticSolidArchiveNodeDirectory::TruncateTreeIdNames(
+        u32 count) {
+    return treeIdNames.ResizePrefix(count);
 }
 
 u32 CGameCtnReplayStaticSolidArchiveNodeDirectory::FindRecord(
@@ -1197,12 +1206,17 @@ u32 CGameCtnReplayStaticSolidArchiveGraph::TailCount(
     switch (tail) {
         case CGameCtnReplayStaticSolidArchiveGraphTail::Nodes:
             return nodeDirectory.Count();
+        case CGameCtnReplayStaticSolidArchiveGraphTail::TreeIdNames:
+            return nodeDirectory.TreeIdNameCount();
         case CGameCtnReplayStaticSolidArchiveGraphTail::TreeChildLinks:
             return treeGraph.ChildLinkCount();
         case CGameCtnReplayStaticSolidArchiveGraphTail::TreeStateDefinitions:
             return treeGraph.TreeStateCount();
         case CGameCtnReplayStaticSolidArchiveGraphTail::SolidTreeLinks:
             return treeGraph.SolidRootLinkCount();
+        case CGameCtnReplayStaticSolidArchiveGraphTail::
+                SolidPhysicalDefinitions:
+            return treeGraph.SolidPhysicalDefinitionCount();
         case CGameCtnReplayStaticSolidArchiveGraphTail::TreeSurfaceLinks:
             return treeGraph.TreeSurfaceLinkCount();
         case CGameCtnReplayStaticSolidArchiveGraphTail::TreeSourceLinks:
@@ -1232,12 +1246,17 @@ int CGameCtnReplayStaticSolidArchiveGraph::RestoreTail(
     switch (tail) {
         case CGameCtnReplayStaticSolidArchiveGraphTail::Nodes:
             return nodeDirectory.ResizePrefix(recordCount);
+        case CGameCtnReplayStaticSolidArchiveGraphTail::TreeIdNames:
+            return nodeDirectory.TruncateTreeIdNames(recordCount);
         case CGameCtnReplayStaticSolidArchiveGraphTail::TreeChildLinks:
             return treeGraph.TruncateChildLinks(recordCount);
         case CGameCtnReplayStaticSolidArchiveGraphTail::TreeStateDefinitions:
             return treeGraph.TruncateTreeStates(recordCount);
         case CGameCtnReplayStaticSolidArchiveGraphTail::SolidTreeLinks:
             return treeGraph.TruncateSolidRootLinks(recordCount);
+        case CGameCtnReplayStaticSolidArchiveGraphTail::
+                SolidPhysicalDefinitions:
+            return treeGraph.TruncateSolidPhysicalDefinitions(recordCount);
         case CGameCtnReplayStaticSolidArchiveGraphTail::TreeSurfaceLinks:
             return treeGraph.TruncateTreeSurfaceLinks(recordCount);
         case CGameCtnReplayStaticSolidArchiveGraphTail::TreeSourceLinks:
@@ -1277,8 +1296,26 @@ CGameCtnReplayStaticSolidArchiveGraph::MarkRollback() const {
     return mark;
 }
 
+int CGameCtnReplayStaticSolidArchiveGraph::CanRestoreRollback(
+        const CGameCtnReplayStaticSolidArchiveGraphRollbackMark &mark) const {
+    for (u32 i = 0u;
+         i < static_cast<u32>(
+                     CGameCtnReplayStaticSolidArchiveGraphTail::Count);
+         i++) {
+        const auto tail =
+                static_cast<CGameCtnReplayStaticSolidArchiveGraphTail>(i);
+        if (mark.tailCounts[static_cast<size_t>(tail)] > TailCount(tail)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 int CGameCtnReplayStaticSolidArchiveGraph::RestoreRollback(
         const CGameCtnReplayStaticSolidArchiveGraphRollbackMark &mark) {
+    if (!CanRestoreRollback(mark)) {
+        return 0;
+    }
     for (u32 i = 0u;
          i < static_cast<u32>(
                      CGameCtnReplayStaticSolidArchiveGraphTail::Count);

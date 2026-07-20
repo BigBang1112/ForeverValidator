@@ -1,15 +1,18 @@
 #include "format/static_solid/default_vehicle_solid_archive.h"
 #include <array>
 #include <cstdint>
+#include <new>
 #include <string_view>
 #include <utility>
+#include <vector>
 
+#include "engine/rendering/plug_tree.h"
 #include "format/pack/installed/plug_file_pack.h"
+#include "format/pack/installed_vehicle_asset_graph.h"
+#include "format/static_solid/static_solid_archive_assembler.h"
 #include "format/static_solid/static_scene_archive_loader.h"
-namespace {
 
-constexpr std::string_view DefaultVehicleSolidPath =
-        "Vehicles\\Media\\Solid\\41B4559784BFBD1D35DAA5A70EBB9C5B97";
+namespace {
 
 struct DefaultVehicleWheelSurface {
     std::size_t wheelIndex;
@@ -53,21 +56,6 @@ std::optional<VehicleCollisionRole> CollisionRoleForTreeName(
     if (name == nullptr) {
         return std::nullopt;
     }
-    struct NamedBodyRole {
-        std::string_view name;
-        VehicleCollisionRole role;
-    };
-    static constexpr std::array<NamedBodyRole, 4u> BodyRoles{
-            NamedBodyRole{"BodySurf", VehicleCollisionRole::BodyLongitudinal},
-            NamedBodyRole{"BodySurf01", VehicleCollisionRole::BodyMain},
-            NamedBodyRole{"BodySurf02", VehicleCollisionRole::BodyRear},
-            NamedBodyRole{"BodySurf04", VehicleCollisionRole::BodyFront},
-    };
-    for (const NamedBodyRole &body : BodyRoles) {
-        if (name == body.name) {
-            return body.role;
-        }
-    }
     const std::optional<DefaultVehicleWheelSurface> wheel =
             WheelSurfaceForTreeName(name);
     return wheel.has_value()
@@ -75,25 +63,56 @@ std::optional<VehicleCollisionRole> CollisionRoleForTreeName(
             : std::nullopt;
 }
 
+bool IsBodyCollisionTreeName(const char *name) {
+    if (name == nullptr) {
+        return false;
+    }
+    const std::string_view value(name);
+    return value.rfind("BodySurf", 0u) == 0u ||
+           value.rfind("Sphere", 0u) == 0u;
+}
+
+bool IsVehicleCollisionTreeName(const char *name) {
+    return CollisionRoleForTreeName(name).has_value() ||
+           IsBodyCollisionTreeName(name);
+}
+
+std::optional<std::size_t> SelectedParentIndex(
+        const CPlugTree &tree,
+        const std::vector<CPlugTree *> &selectedTrees) {
+    for (CPlugTree *parent = tree.ParentTree();
+         parent != nullptr;
+         parent = parent->ParentTree()) {
+        for (std::size_t index = 0u; index < selectedTrees.size(); index++) {
+            if (selectedTrees[index] == parent) {
+                return index;
+            }
+        }
+    }
+    return std::nullopt;
+}
+
 bool AddTreeDefinition(
         const CGameCtnReplayStaticSolidArchiveNamedTree &namedTree,
+        CPlugTree *collisionRoot,
+        const std::vector<CPlugTree *> &selectedTrees,
         ReplayVehicleSolidDefinition &definitions) {
     const std::optional<DefaultVehicleWheelSurface> wheelSurface =
             WheelSurfaceForTreeName(namedTree.Name());
     const std::optional<VehicleCollisionRole> collisionRole =
             CollisionRoleForTreeName(namedTree.Name());
-    if (!collisionRole.has_value()) {
+    const bool isBody = IsBodyCollisionTreeName(namedTree.Name());
+    if (!collisionRole.has_value() && !isBody) {
         return true;
     }
     if (!namedTree.HasSurfaceGeometry()) {
         return false;
     }
 
-    const CGameCtnReplayStaticSolidArchiveTreeStateDefinition *state =
-            namedTree.State();
     const CGameCtnReplayStaticSolidArchiveSurfaceGeometryDefinition *geom =
             namedTree.SurfaceGeom();
-    if (state == nullptr || geom == nullptr) {
+    if (collisionRoot == nullptr || namedTree.Name() == nullptr ||
+        geom == nullptr) {
         return false;
     }
 
@@ -102,14 +121,35 @@ bool AddTreeDefinition(
         return false;
     }
 
-    if (!definitions.collisionModel.SetShape(
-            *collisionRole,
-            VehicleCollisionShapeDefinition{
-                state->LocalTransform(),
-                geom->BoundingBox(),
-                GmLocalMaterialIndex::FromIndex(materialId),
-                static_cast<EPlugSurfaceMaterialId>(materialId),
-            })) {
+    const CMwId id = CMwId::CreateFromLocalName(namedTree.Name());
+    CPlugTree *assembled = collisionRoot->GetPlugFromId(id);
+    if (assembled == nullptr) {
+        return false;
+    }
+    const std::optional<std::size_t> parentShapeIndex =
+            SelectedParentIndex(*assembled, selectedTrees);
+    CPlugTree *shapeParent = parentShapeIndex.has_value()
+            ? selectedTrees[*parentShapeIndex]
+            : nullptr;
+    GmIso4 collisionPose;
+    assembled->GetThisToRootTransfo(collisionPose, 1, shapeParent);
+    GmIso4 rootPose;
+    assembled->GetThisToRootTransfo(rootPose, 1, nullptr);
+
+    VehicleCollisionShapeDefinition shape{
+            geom->SurfType(),
+            collisionPose,
+            geom->BoundingBox(),
+            GmLocalMaterialIndex::FromIndex(materialId),
+            static_cast<EPlugSurfaceMaterialId>(materialId),
+    };
+    if ((isBody && !definitions.collisionModel.AddBodyShape(
+                           shape, parentShapeIndex)) ||
+        (collisionRole.has_value() &&
+         !definitions.collisionModel.SetWheelShape(
+                 *collisionRole,
+                 std::move(shape),
+                 parentShapeIndex))) {
         return false;
     }
 
@@ -124,7 +164,7 @@ bool AddTreeDefinition(
     VehicleWheelDefinition wheel;
     wheel.surfaceId = wheelSurface->surfaceId;
     wheel.rollingRadius = geom->BoundingBox().halfExtents.y;
-    wheel.restSurfacePose = state->LocalTransform();
+    wheel.restSurfacePose = rootPose;
     wheel.forceApplicationPoint = wheel.restSurfacePose.Translation();
     wheel.initialSurfacePoint = wheel.forceApplicationPoint;
     wheel.collisionRole = wheelSurface->collisionRole;
@@ -134,17 +174,45 @@ bool AddTreeDefinition(
 
 bool ExtractWheelDefinitions(
         const StaticSolidArchiveLoadSession &archive,
+        CPlugTree *collisionRoot,
         ReplayVehicleSolidDefinition &definitions) {
     const StaticSolidArchiveId payload =
             StaticSolidArchiveId::FromIndex(0u);
     const CGameCtnReplayStaticSolidArchiveGraph &graph =
             archive.ArchiveGraph();
+    std::vector<CPlugTree *> selectedTrees;
+    try {
+        if (!graph.ForEachNamedTree(
+                    payload,
+                    [&](const CGameCtnReplayStaticSolidArchiveNamedTree
+                                &namedTree) {
+                        if (!IsVehicleCollisionTreeName(namedTree.Name())) {
+                            return true;
+                        }
+                        const CMwId id =
+                                CMwId::CreateFromLocalName(namedTree.Name());
+                        CPlugTree *tree = collisionRoot != nullptr
+                                ? collisionRoot->GetPlugFromId(id)
+                                : nullptr;
+                        if (tree == nullptr) {
+                            return false;
+                        }
+                        selectedTrees.push_back(tree);
+                        return true;
+                    })) {
+            return false;
+        }
+    } catch (const std::bad_alloc &) {
+        return false;
+    }
     if (!graph.ForEachNamedTree(
                 payload,
                 [&](const CGameCtnReplayStaticSolidArchiveNamedTree
                             &namedTree) {
                     return AddTreeDefinition(
                             namedTree,
+                            collisionRoot,
+                            selectedTrees,
                             definitions);
                 })) {
         return false;
@@ -157,8 +225,22 @@ bool ExtractWheelDefinitions(
 std::optional<ReplayVehicleSolidDefinition>
 DefaultVehicleSolidArchive::LoadFromPack(
         CPlugFilePack &pack) {
+    std::optional<InstalledVehicleAssetGraph> assets =
+            InstalledVehicleAssetGraph::ResolveFromPack(pack);
+    return assets.has_value()
+            ? LoadFromPack(pack, *assets)
+            : std::nullopt;
+}
+
+std::optional<ReplayVehicleSolidDefinition>
+DefaultVehicleSolidArchive::LoadFromPack(
+        CPlugFilePack &pack,
+        const InstalledVehicleAssetGraph &assets) {
+    if (!assets.IsComplete()) {
+        return std::nullopt;
+    }
     const CPlugFileFidContainer_SFileDesc *file =
-            pack.FindFileDescByPath(DefaultVehicleSolidPath.data());
+            pack.FindFileDescByPath(assets.solid.selectedPath.c_str());
     if (file == nullptr) {
         return std::nullopt;
     }
@@ -175,8 +257,8 @@ DefaultVehicleSolidArchive::LoadFromPack(
             *file,
             0u,
             1u,
-            DefaultVehicleSolidPath.data(),
-            DefaultVehicleSolidPath.data(),
+            assets.solid.logicalPath.c_str(),
+            assets.solid.selectedPath.c_str(),
             &decodedPayload,
             &stats) ||
         !decodedPayload.IsReady() ||
@@ -184,8 +266,18 @@ DefaultVehicleSolidArchive::LoadFromPack(
         return std::nullopt;
     }
 
+    StaticSolidArchiveAssembler assembler;
+    if (!assembler.Assemble(archive.ArchiveGraph(), archive)) {
+        return std::nullopt;
+    }
+    CPlugTree *collisionRoot =
+            assembler.CollisionRoot(StaticSolidArchiveId::FromIndex(0u));
+    if (collisionRoot == nullptr) {
+        return std::nullopt;
+    }
+
     ReplayVehicleSolidDefinition definitions;
-    if (!ExtractWheelDefinitions(archive, definitions)) {
+    if (!ExtractWheelDefinitions(archive, collisionRoot, definitions)) {
         return std::nullopt;
     }
     return std::optional<ReplayVehicleSolidDefinition>(

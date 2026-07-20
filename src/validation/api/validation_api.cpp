@@ -3,11 +3,15 @@
 #include <cstdint>
 #include <memory>
 #include <new>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "format/assets/replay_asset_repository.h"
 #include "format/pack/default_vehicle_pack_archive.h"
+#include "format/pack/installed/installed_pack_key_catalog.h"
 #include "format/pack/installed/plug_file_pack.h"
+#include "format/pack/installed_vehicle_asset_graph.h"
 #include "format/pack/replay_vehicle_source_bundle.h"
 #include "format/replay/replay_file.h"
 #include "format/static_solid/default_vehicle_solid_archive.h"
@@ -15,16 +19,34 @@
 #include "simulation/runtime/replay_simulation_definition.h"
 #include "simulation/runtime/replay_simulation_session.h"
 #include "validation/evaluation/replay_validation_session.h"
+#include "validation/planning/replay_asset_route.h"
 #include "validation/planning/replay_challenge_map_preload.h"
 
 namespace forevervalidator {
 
 namespace {
 
-struct PreparedAssets {
-    AssetBytes stadiumPack;
-    AssetBytes packlist;
+struct CachedInstalledPack {
+    std::string packName;
+    AssetBytes bytes;
+};
+
+struct CachedPackAssets {
+    std::string packName;
+    std::unique_ptr<ReplayAssetRepository> repository;
+};
+
+struct CachedVehicleAssets {
+    std::string packName;
+    ::ReplayVehicleModel vehicleModel = ::ReplayVehicleModel::Unknown;
+    InstalledVehicleAssetGraph assetGraph;
     ReplayVehicleSourceBundle vehicleSources;
+};
+
+struct PreparedAssets {
+    ReplayAssetRepository *mapAssets = nullptr;
+    ReplayAssetRepository *decorationAssets = nullptr;
+    const ReplayVehicleSourceBundle *vehicleSources = nullptr;
 };
 
 struct ValidationState {
@@ -32,7 +54,11 @@ struct ValidationState {
         : provider(std::move(value)) {}
 
     AssetProvider provider;
-    std::unique_ptr<PreparedAssets> prepared;
+    AssetBytes packlistBytes;
+    std::unique_ptr<InstalledPackKeyCatalog> packKeys;
+    std::vector<std::unique_ptr<CachedInstalledPack>> installedPacks;
+    std::vector<std::unique_ptr<CachedPackAssets>> assetRepositories;
+    std::vector<std::unique_ptr<CachedVehicleAssets>> vehicleAssets;
 };
 
 }  // namespace
@@ -102,6 +128,10 @@ ValidationStatus ToPublicStatus(ReplayValidationStatus status) {
         return ValidationStatus::RespawnExpectationUnavailable;
     case ReplayValidationStatus::ObservationError:
         return ValidationStatus::ObservationError;
+    case ReplayValidationStatus::IncompatibleReplayVersion:
+        return ValidationStatus::IncompatibleReplayVersion;
+    case ReplayValidationStatus::InputUnavailable:
+        return ValidationStatus::InputUnavailable;
     }
     return ValidationStatus::ObservationError;
 }
@@ -150,9 +180,52 @@ std::optional<ObservationError> ToPublicObservationError(
     return ObservationError::ReplayMetadataUnavailable;
 }
 
+MapEnvironment ToPublicMapEnvironment(
+        ::ReplayMapEnvironment environment) noexcept {
+    switch (environment) {
+    case ::ReplayMapEnvironment::Alpine: return MapEnvironment::Alpine;
+    case ::ReplayMapEnvironment::Speed: return MapEnvironment::Speed;
+    case ::ReplayMapEnvironment::Rally: return MapEnvironment::Rally;
+    case ::ReplayMapEnvironment::Island: return MapEnvironment::Island;
+    case ::ReplayMapEnvironment::Coast: return MapEnvironment::Coast;
+    case ::ReplayMapEnvironment::Bay: return MapEnvironment::Bay;
+    case ::ReplayMapEnvironment::Stadium: return MapEnvironment::Stadium;
+    case ::ReplayMapEnvironment::Unknown: return MapEnvironment::Unknown;
+    }
+    return MapEnvironment::Unknown;
+}
+
+VehicleModel ToPublicVehicleModel(::ReplayVehicleModel vehicle) noexcept {
+    switch (vehicle) {
+    case ::ReplayVehicleModel::SnowCar: return VehicleModel::SnowCar;
+    case ::ReplayVehicleModel::DesertCar: return VehicleModel::DesertCar;
+    case ::ReplayVehicleModel::RallyCar: return VehicleModel::RallyCar;
+    case ::ReplayVehicleModel::IslandCar: return VehicleModel::IslandCar;
+    case ::ReplayVehicleModel::CoastCar: return VehicleModel::CoastCar;
+    case ::ReplayVehicleModel::BayCar: return VehicleModel::BayCar;
+    case ::ReplayVehicleModel::StadiumCar: return VehicleModel::StadiumCar;
+    case ::ReplayVehicleModel::Unknown: return VehicleModel::Unknown;
+    }
+    return VehicleModel::Unknown;
+}
+
+PlayMode ToPublicPlayMode(EChallengePlayMode mode) noexcept {
+    switch (mode) {
+    case EChallengePlayMode::Race: return PlayMode::Race;
+    case EChallengePlayMode::Platform: return PlayMode::Platform;
+    case EChallengePlayMode::Puzzle: return PlayMode::Puzzle;
+    case EChallengePlayMode::Crazy: return PlayMode::Crazy;
+    case EChallengePlayMode::Shortcut: return PlayMode::Shortcut;
+    case EChallengePlayMode::Stunts: return PlayMode::Stunts;
+    }
+    return PlayMode::Race;
+}
+
 ValidationReport ToPublicReport(
         const ReplayIdentity &identity,
-        const ReplayFileValidationResult &source) {
+        const ReplayFileValidationResult &source,
+        const ReplayFile &replay,
+        const ReplayAssetRoute &route) {
     ValidationReport report;
     report.replay = identity;
     report.valid = source.validation.status == ReplayValidationStatus::Valid;
@@ -176,6 +249,14 @@ ValidationReport ToPublicReport(
     report.maxDeviationDistance = source.validation.maxDeviationDistance;
     report.observationError =
             ToPublicObservationError(source.validation.observationError);
+    report.metadata.mapEnvironment =
+            ToPublicMapEnvironment(route.mapEnvironment);
+    report.metadata.vehicleModel = ToPublicVehicleModel(route.vehicleModel);
+    report.metadata.playMode = ToPublicPlayMode(route.playMode);
+    if (route.validationMode == ReplayValidationMode::Stunts) {
+        report.metadata.expectedStuntsScore =
+                replay.InputTimeline().Metadata().stuntScore;
+    }
     report.metadata.sampleCount = source.metadata.sampleCount;
     report.metadata.samplePeriodMs = source.metadata.samplePeriodMs;
     report.metadata.encodedGhostSampleByteCount =
@@ -194,6 +275,50 @@ ValidationReport ToPublicReport(
     report.simulation.stuntsScore = source.raceOutcome.stuntsScore;
     report.simulation.respawnCount = source.raceOutcome.respawnCount;
     return report;
+}
+
+ValidationError ReplayRouteError(
+        ReplayAssetRouteResult routeResult,
+        const ReplayIdentity &identity,
+        const ReplayFile &replay) {
+    ValidationFailureReason reason = ValidationFailureReason::UnsupportedPlayMode;
+    std::string relatedIdentifier;
+    switch (routeResult) {
+    case ReplayAssetRouteResult::UnsupportedMapEnvironment:
+        reason = ValidationFailureReason::UnsupportedMapEnvironmentIdentifier;
+        relatedIdentifier = replay.MapInput().DefaultCollectionName();
+        break;
+    case ReplayAssetRouteResult::UnsupportedDecorationEnvironment:
+        reason = ValidationFailureReason::UnsupportedMapEnvironmentIdentifier;
+        relatedIdentifier =
+                replay.MapInput().DecorationCollection().Name();
+        break;
+    case ReplayAssetRouteResult::UnsupportedVehicleIdentifier:
+        reason = ValidationFailureReason::UnsupportedVehicleIdentifier;
+        relatedIdentifier = replay.VehicleIdentifier().id;
+        break;
+    case ReplayAssetRouteResult::MissingPlayMode:
+    case ReplayAssetRouteResult::UnsupportedPlayMode:
+        reason = ValidationFailureReason::UnsupportedPlayMode;
+        if (replay.ChallengeMetadata().playMode.has_value()) {
+            relatedIdentifier = EChallengePlayModeName(
+                    *replay.ChallengeMetadata().playMode);
+        }
+        break;
+    case ReplayAssetRouteResult::Success:
+    case ReplayAssetRouteResult::MissingOutput:
+        reason = ValidationFailureReason::UnexpectedFailure;
+        break;
+    }
+    ValidationError error = MakeError(
+            ValidationErrorCategory::Replay,
+            ValidationErrorCode::ReplayDecodingFailed,
+            ValidationStage::ReplayDecoding,
+            reason,
+            identity,
+            ReplayAssetRouteResultName(routeResult));
+    error.relatedAsset = std::move(relatedIdentifier);
+    return error;
 }
 
 ValidationFailureReason ReplayReadReason(ReplayFileReadError error) {
@@ -479,85 +604,280 @@ Result<AssetBytes> LoadRequiredAsset(
     return Result<AssetBytes>::Success(std::move(bytes));
 }
 
-Result<PreparedAssets *> PrepareAssets(
+ValidationFailureReason MissingPackReason(std::string_view packName) noexcept {
+    return packName == "Stadium"
+            ? ValidationFailureReason::StadiumPackMissing
+            : ValidationFailureReason::InstalledPackMissing;
+}
+
+ValidationFailureReason InvalidPackReason(std::string_view packName) noexcept {
+    return packName == "Stadium"
+            ? ValidationFailureReason::StadiumPackInvalid
+            : ValidationFailureReason::InstalledPackInvalid;
+}
+
+Result<InstalledPackKeyCatalog *> PreparePackKeys(
         ValidationState &context,
         const ReplayIdentity &identity) {
-    if (context.prepared != nullptr) {
-        return Result<PreparedAssets *>::Success(
-                context.prepared.get());
+    if (context.packKeys != nullptr) {
+        return Result<InstalledPackKeyCatalog *>::Success(
+                context.packKeys.get());
     }
-
     Result<AssetBytes> packlist = LoadRequiredAsset(
-            context, "packlist.dat", ValidationFailureReason::PacklistMissing,
+            context,
+            "packlist.dat",
+            ValidationFailureReason::PacklistMissing,
             identity);
     if (!packlist) {
-        return Result<PreparedAssets *>::Failure(
+        return Result<InstalledPackKeyCatalog *>::Failure(
                 std::move(packlist).Error());
     }
-    Result<AssetBytes> stadium = LoadRequiredAsset(
-            context, "Stadium.pak", ValidationFailureReason::StadiumPackMissing,
+    auto keys = std::make_unique<InstalledPackKeyCatalog>();
+    context.packlistBytes = std::move(packlist).Value();
+    if (!keys->LoadFromMemory(
+                context.packlistBytes.data(),
+                context.packlistBytes.size())) {
+        context.packlistBytes.clear();
+        ValidationError error = MakeError(
+                ValidationErrorCategory::Asset,
+                ValidationErrorCode::AssetLoadingFailed,
+                ValidationStage::AssetLoading,
+                ValidationFailureReason::InstalledPackInvalid,
+                identity,
+                "could not authenticate or decode packlist.dat");
+        error.relatedAsset = "packlist.dat";
+        return Result<InstalledPackKeyCatalog *>::Failure(std::move(error));
+    }
+    context.packKeys = std::move(keys);
+    return Result<InstalledPackKeyCatalog *>::Success(context.packKeys.get());
+}
+
+Result<CachedInstalledPack *> PrepareInstalledPack(
+        ValidationState &context,
+        std::string_view packName,
+        const ReplayIdentity &identity) {
+    for (const auto &cached : context.installedPacks) {
+        if (cached->packName == packName) {
+            return Result<CachedInstalledPack *>::Success(cached.get());
+        }
+    }
+
+    Result<InstalledPackKeyCatalog *> keyResult =
+            PreparePackKeys(context, identity);
+    if (!keyResult) {
+        return Result<CachedInstalledPack *>::Failure(
+                std::move(keyResult).Error());
+    }
+    try {
+        const std::string packNameText(packName);
+        const std::string identifier = packNameText + ".pak";
+        Result<AssetBytes> loaded = LoadRequiredAsset(
+                context,
+                identifier.c_str(),
+                MissingPackReason(packName),
+                identity);
+        if (!loaded) {
+            return Result<CachedInstalledPack *>::Failure(
+                    std::move(loaded).Error());
+        }
+        auto cached = std::make_unique<CachedInstalledPack>();
+        cached->packName = packNameText;
+        cached->bytes = std::move(loaded).Value();
+        CPlugFilePack probe;
+        if (!probe.OpenFromMemory(
+                    cached->bytes.data(),
+                    cached->bytes.size(),
+                    *keyResult.Value(),
+                    cached->packName.c_str())) {
+            ValidationError error = MakeError(
+                    ValidationErrorCategory::Asset,
+                    ValidationErrorCode::AssetLoadingFailed,
+                    ValidationStage::AssetLoading,
+                    InvalidPackReason(packName),
+                    identity,
+                    "could not decode the selected installed pack");
+            error.relatedAsset = identifier;
+            return Result<CachedInstalledPack *>::Failure(std::move(error));
+        }
+        CachedInstalledPack *result = cached.get();
+        context.installedPacks.push_back(std::move(cached));
+        return Result<CachedInstalledPack *>::Success(result);
+    } catch (const std::bad_alloc &) {
+        return Result<CachedInstalledPack *>::Failure(AllocationError(
+                ValidationStage::AssetLoading,
+                identity,
+                "allocation failed while caching an installed pack"));
+    }
+}
+
+Result<CachedPackAssets *> PreparePackAssets(
+        ValidationState &context,
+        std::string_view packName,
+        const ReplayIdentity &identity) {
+    for (const auto &cached : context.assetRepositories) {
+        if (cached->packName == packName) {
+            return Result<CachedPackAssets *>::Success(cached.get());
+        }
+    }
+    Result<CachedInstalledPack *> packResult =
+            PrepareInstalledPack(context, packName, identity);
+    if (!packResult) {
+        return Result<CachedPackAssets *>::Failure(
+                std::move(packResult).Error());
+    }
+    try {
+        CachedInstalledPack &pack = *packResult.Value();
+        auto cached = std::make_unique<CachedPackAssets>();
+        cached->packName = pack.packName;
+        cached->repository = OpenReplayAssetRepository(
+                pack.bytes.data(),
+                pack.bytes.size(),
+                *context.packKeys,
+                pack.packName.c_str());
+        if (!cached->repository) {
+            ValidationError error = MakeError(
+                    ValidationErrorCategory::Asset,
+                    ValidationErrorCode::AssetLoadingFailed,
+                    ValidationStage::AssetLoading,
+                    ValidationFailureReason::AssetRepositoryUnavailable,
+                    identity,
+                    "could not create the routed pack asset repository");
+            error.relatedAsset = pack.packName + ".pak";
+            return Result<CachedPackAssets *>::Failure(std::move(error));
+        }
+        CachedPackAssets *result = cached.get();
+        context.assetRepositories.push_back(std::move(cached));
+        return Result<CachedPackAssets *>::Success(result);
+    } catch (const std::bad_alloc &) {
+        return Result<CachedPackAssets *>::Failure(AllocationError(
+                ValidationStage::AssetLoading,
+                identity,
+                "allocation failed while caching routed pack assets"));
+    }
+}
+
+Result<CachedVehicleAssets *> PrepareVehicleAssets(
+        ValidationState &context,
+        ::ReplayVehicleModel vehicleModel,
+        std::string_view packName,
+        const ReplayIdentity &identity) {
+    for (const auto &cached : context.vehicleAssets) {
+        if (cached->vehicleModel == vehicleModel &&
+            cached->packName == packName) {
+            return Result<CachedVehicleAssets *>::Success(cached.get());
+        }
+    }
+    Result<CachedInstalledPack *> packResult =
+            PrepareInstalledPack(context, packName, identity);
+    if (!packResult) {
+        return Result<CachedVehicleAssets *>::Failure(
+                std::move(packResult).Error());
+    }
+    try {
+        CachedInstalledPack &installed = *packResult.Value();
+        CPlugFilePack pack;
+        if (!pack.OpenFromMemory(
+                    installed.bytes.data(),
+                    installed.bytes.size(),
+                    *context.packKeys,
+                    installed.packName.c_str())) {
+            ValidationError error = MakeError(
+                    ValidationErrorCategory::Asset,
+                    ValidationErrorCode::AssetLoadingFailed,
+                    ValidationStage::AssetLoading,
+                    InvalidPackReason(packName),
+                    identity,
+                    "could not reopen the routed vehicle pack");
+            error.relatedAsset = installed.packName + ".pak";
+            return Result<CachedVehicleAssets *>::Failure(std::move(error));
+        }
+        std::optional<InstalledVehicleAssetGraph> assetGraph =
+                InstalledVehicleAssetGraph::ResolveFromPack(pack);
+        if (!assetGraph.has_value()) {
+            ValidationError error = MakeError(
+                    ValidationErrorCategory::Asset,
+                    ValidationErrorCode::AssetLoadingFailed,
+                    ValidationStage::AssetLoading,
+                    ValidationFailureReason::DefaultVehicleUnavailable,
+                    identity,
+                    "could not resolve the routed vehicle asset graph");
+            error.relatedAsset = installed.packName + ".pak";
+            return Result<CachedVehicleAssets *>::Failure(std::move(error));
+        }
+        std::optional<DefaultVehiclePackData> vehicle =
+                DefaultVehiclePackArchive::LoadFromPack(pack, *assetGraph);
+        std::optional<ReplayVehicleSolidDefinition> solid =
+                DefaultVehicleSolidArchive::LoadFromPack(pack, *assetGraph);
+        if (!vehicle.has_value() || !solid.has_value()) {
+            ValidationError error = MakeError(
+                    ValidationErrorCategory::Asset,
+                    ValidationErrorCode::AssetLoadingFailed,
+                    ValidationStage::AssetLoading,
+                    ValidationFailureReason::DefaultVehicleUnavailable,
+                    identity,
+                    "could not load the routed vehicle definitions");
+            error.relatedAsset = installed.packName + ".pak";
+            return Result<CachedVehicleAssets *>::Failure(std::move(error));
+        }
+        auto cached = std::make_unique<CachedVehicleAssets>();
+        cached->packName = installed.packName;
+        cached->vehicleModel = vehicleModel;
+        cached->assetGraph = std::move(*assetGraph);
+        cached->vehicleSources = ReplayVehicleSourceBundle{
+                std::move(*solid),
+                std::move(vehicle->tuning),
+                std::move(vehicle->vehicle)};
+        if (!cached->vehicleSources.IsComplete()) {
+            ValidationError error = MakeError(
+                    ValidationErrorCategory::Asset,
+                    ValidationErrorCode::AssetLoadingFailed,
+                    ValidationStage::AssetLoading,
+                    ValidationFailureReason::DefaultVehicleUnavailable,
+                    identity,
+                    "routed vehicle definitions are incomplete");
+            error.relatedAsset = installed.packName + ".pak";
+            return Result<CachedVehicleAssets *>::Failure(std::move(error));
+        }
+        CachedVehicleAssets *result = cached.get();
+        context.vehicleAssets.push_back(std::move(cached));
+        return Result<CachedVehicleAssets *>::Success(result);
+    } catch (const std::bad_alloc &) {
+        return Result<CachedVehicleAssets *>::Failure(AllocationError(
+                ValidationStage::AssetLoading,
+                identity,
+                "allocation failed while caching routed vehicle assets"));
+    }
+}
+
+Result<PreparedAssets> PrepareAssets(
+        ValidationState &context,
+        const ReplayAssetRoute &route,
+        const ReplayIdentity &identity) {
+    Result<CachedPackAssets *> mapResult =
+            PreparePackAssets(context, route.mapPackName, identity);
+    if (!mapResult) {
+        return Result<PreparedAssets>::Failure(std::move(mapResult).Error());
+    }
+    Result<CachedPackAssets *> decorationResult = PreparePackAssets(
+            context, route.decorationPackName, identity);
+    if (!decorationResult) {
+        return Result<PreparedAssets>::Failure(
+                std::move(decorationResult).Error());
+    }
+    Result<CachedVehicleAssets *> vehicleResult = PrepareVehicleAssets(
+            context,
+            route.vehicleModel,
+            route.vehiclePackName,
             identity);
-    if (!stadium) {
-        return Result<PreparedAssets *>::Failure(
-                std::move(stadium).Error());
+    if (!vehicleResult) {
+        return Result<PreparedAssets>::Failure(
+                std::move(vehicleResult).Error());
     }
-
-    auto prepared = std::make_unique<PreparedAssets>();
-    prepared->packlist = std::move(packlist).Value();
-    prepared->stadiumPack = std::move(stadium).Value();
-
-    CPlugFilePack pack;
-    if (!pack.OpenFromMemory(
-                prepared->stadiumPack.data(), prepared->stadiumPack.size(),
-                prepared->packlist.data(), prepared->packlist.size())) {
-        ValidationError error = MakeError(
-                ValidationErrorCategory::Asset,
-                ValidationErrorCode::AssetLoadingFailed,
-                ValidationStage::AssetLoading,
-                ValidationFailureReason::StadiumPackInvalid,
-                identity,
-                "could not decode Stadium.pak using packlist.dat");
-        error.relatedAsset = "Stadium.pak";
-        return Result<PreparedAssets *>::Failure(
-                std::move(error));
-    }
-
-    std::optional<DefaultVehiclePackData> vehicle =
-            DefaultVehiclePackArchive::LoadFromPack(pack);
-    std::optional<ReplayVehicleSolidDefinition> solid =
-            DefaultVehicleSolidArchive::LoadFromPack(pack);
-    if (!vehicle.has_value() || !solid.has_value()) {
-        ValidationError error = MakeError(
-                ValidationErrorCategory::Asset,
-                ValidationErrorCode::AssetLoadingFailed,
-                ValidationStage::AssetLoading,
-                ValidationFailureReason::DefaultVehicleUnavailable,
-                identity,
-                "could not load default vehicle definitions from Stadium pack");
-        error.relatedAsset = "Stadium.pak";
-        return Result<PreparedAssets *>::Failure(
-                std::move(error));
-    }
-    prepared->vehicleSources = ReplayVehicleSourceBundle{
-            std::move(*solid),
-            std::move(vehicle->tuning),
-            std::move(vehicle->vehicle)};
-    if (!prepared->vehicleSources.IsComplete()) {
-        ValidationError error = MakeError(
-                ValidationErrorCategory::Asset,
-                ValidationErrorCode::AssetLoadingFailed,
-                ValidationStage::AssetLoading,
-                ValidationFailureReason::DefaultVehicleUnavailable,
-                identity,
-                "default vehicle definitions are incomplete");
-        error.relatedAsset = "Stadium.pak";
-        return Result<PreparedAssets *>::Failure(
-                std::move(error));
-    }
-
-    context.prepared = std::move(prepared);
-    return Result<PreparedAssets *>::Success(
-            context.prepared.get());
+    return Result<PreparedAssets>::Success(PreparedAssets{
+            mapResult.Value()->repository.get(),
+            decorationResult.Value()->repository.get(),
+            &vehicleResult.Value()->vehicleSources,
+    });
 }
 
 Result<ValidationReport> RunReplayValidation(
@@ -575,48 +895,14 @@ Result<ValidationReport> RunReplayValidation(
                 ReplayDecodeError(readError, identity));
     }
 
-    Result<PreparedAssets *> preparedResult =
-            PrepareAssets(context, identity);
-    if (!preparedResult) {
+    ReplayAssetRoute route;
+    const ReplayAssetRouteResult routeResult =
+            BuildReplayAssetRoute(replayFile, &route);
+    if (routeResult != ReplayAssetRouteResult::Success) {
         return Result<ValidationReport>::Failure(
-                std::move(preparedResult).Error());
-    }
-    const PreparedAssets &prepared =
-            *preparedResult.Value();
-
-    std::unique_ptr<ReplayAssetRepository> assets = OpenReplayAssetRepository(
-            prepared.stadiumPack.data(), prepared.stadiumPack.size(),
-            prepared.packlist.data(), prepared.packlist.size());
-    if (!assets) {
-        ValidationError error = MakeError(
-                ValidationErrorCategory::Asset,
-                ValidationErrorCode::AssetLoadingFailed,
-                ValidationStage::AssetLoading,
-                ValidationFailureReason::AssetRepositoryUnavailable,
-                identity,
-                "could not open replay asset repository");
-        error.relatedAsset = "Stadium.pak";
-        return Result<ValidationReport>::Failure(std::move(error));
+                ReplayRouteError(routeResult, identity, replayFile));
     }
 
-    ReplaySimulationSession simulationSession;
-    CGameCtnReplayChallengeMapPreload preload;
-    const ReplayChallengePreloadResult preloadResult = preload.Preload(
-            replayFile.MapInput(), *assets, simulationSession);
-    if (preloadResult != ReplayChallengePreloadResult::Success) {
-        return Result<ValidationReport>::Failure(
-                PreloadError(preloadResult, identity));
-    }
-
-    ReplaySimulationDefinitionBuild definition =
-            BuildReplaySimulationDefinition(
-                    prepared.vehicleSources, preload.WaterDefinition());
-    if (!definition) {
-        return Result<ValidationReport>::Failure(
-                DefinitionError(definition.Error(), identity));
-    }
-
-    simulationSession.ActivateStaticScene();
     const ReplayValidationConfiguration configuration{
             options.requestedSamples,
             options.controlTickMs,
@@ -624,8 +910,51 @@ Result<ValidationReport> RunReplayValidation(
             {},
             100000u,
     };
+    std::optional<ReplayFileValidationResult> compatibility =
+            ClassifyReplayCompatibility(replayFile, configuration);
+    if (compatibility.has_value()) {
+        return Result<ValidationReport>::Success(ToPublicReport(
+                identity, *compatibility, replayFile, route));
+    }
+    std::optional<ReplayFileValidationResult> inputAvailability =
+            ClassifyReplayInputAvailability(replayFile, configuration);
+    if (inputAvailability.has_value()) {
+        return Result<ValidationReport>::Success(ToPublicReport(
+                identity, *inputAvailability, replayFile, route));
+    }
+
+    Result<PreparedAssets> preparedResult =
+            PrepareAssets(context, route, identity);
+    if (!preparedResult) {
+        return Result<ValidationReport>::Failure(
+                std::move(preparedResult).Error());
+    }
+    const PreparedAssets prepared = preparedResult.Value();
+
+    ReplaySimulationSession simulationSession;
+    CGameCtnReplayChallengeMapPreload preload;
+    const ReplayChallengePreloadResult preloadResult = preload.Preload(
+            replayFile.MapInput(),
+            *prepared.mapAssets,
+            *prepared.decorationAssets,
+            simulationSession);
+    if (preloadResult != ReplayChallengePreloadResult::Success) {
+        return Result<ValidationReport>::Failure(
+                PreloadError(preloadResult, identity));
+    }
+
+    ReplaySimulationDefinitionBuild definition =
+            BuildReplaySimulationDefinition(
+                    *prepared.vehicleSources, preload.WaterDefinition());
+    if (!definition) {
+        return Result<ValidationReport>::Failure(
+                DefinitionError(definition.Error(), identity));
+    }
+
+    simulationSession.ActivateStaticScene();
     ReplayFileValidationBuild validation = ValidateReplayFile(
             replayFile,
+            route.validationMode,
             simulationSession,
             definition.Value(),
             configuration);
@@ -634,7 +963,7 @@ Result<ValidationReport> RunReplayValidation(
                 ExecutionError(validation.Error(), identity));
     }
     return Result<ValidationReport>::Success(
-            ToPublicReport(identity, validation.Value()));
+            ToPublicReport(identity, validation.Value(), replayFile, route));
 }
 
 }  // namespace

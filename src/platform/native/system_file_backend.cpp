@@ -14,8 +14,13 @@
 
 #include <fcntl.h>
 #include <sys/stat.h>
+#ifdef _WIN32
+#include <io.h>
+#include <process.h>
+#else
 #include <sys/types.h>
 #include <unistd.h>
+#endif
 
 #include "engine/core/fast_string.h"
 #include "engine/resources/system_file_operations.h"
@@ -34,6 +39,18 @@ constexpr int NativeDirectory = O_DIRECTORY;
 constexpr int NativeDirectory = 0;
 #endif
 
+#ifdef _WIN32
+constexpr int NativeReadFlags = _O_RDONLY | _O_BINARY;
+constexpr int NativeWriteFlags = _O_WRONLY | _O_CREAT | _O_BINARY;
+constexpr int NativeExclusiveFlags =
+        _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY;
+#else
+constexpr int NativeReadFlags = O_RDONLY | NativeCloseOnExec;
+constexpr int NativeWriteFlags = O_WRONLY | O_CREAT | NativeCloseOnExec;
+constexpr int NativeExclusiveFlags =
+        O_WRONLY | O_CREAT | O_EXCL | NativeCloseOnExec;
+#endif
+
 enum class NativeOpenResult {
     Opened,
     NotFound,
@@ -47,7 +64,11 @@ public:
 
     ~NativeFile() {
         if (descriptor >= 0) {
+#ifdef _WIN32
+            ::_close(descriptor);
+#else
             ::close(descriptor);
+#endif
         }
     }
 
@@ -55,15 +76,19 @@ public:
     NativeFile &operator=(const NativeFile &) = delete;
 
     NativeOpenResult OpenForReading(const std::filesystem::path &path) {
-        return Open(path, O_RDONLY | NativeCloseOnExec, 0);
+        return Open(path, NativeReadFlags, 0);
     }
 
     NativeOpenResult OpenForWriting(
             const std::filesystem::path &path,
             bool truncate) {
-        int flags = O_WRONLY | O_CREAT | NativeCloseOnExec;
+        int flags = NativeWriteFlags;
         if (truncate) {
+#ifdef _WIN32
+            flags |= _O_TRUNC;
+#else
             flags |= O_TRUNC;
+#endif
         }
         return Open(path, flags, 0666);
     }
@@ -71,15 +96,20 @@ public:
     NativeOpenResult CreateExclusive(const std::filesystem::path &path) {
         return Open(
                 path,
-                O_WRONLY | O_CREAT | O_EXCL | NativeCloseOnExec,
+                NativeExclusiveFlags,
                 0666);
     }
 
     NativeOpenResult OpenDirectory(const std::filesystem::path &path) {
+#ifdef _WIN32
+        (void)path;
+        return NativeOpenResult::Failed;
+#else
         return Open(
                 path,
                 O_RDONLY | NativeDirectory | NativeCloseOnExec,
                 0);
+#endif
     }
 
     std::optional<std::size_t> ReadSome(
@@ -94,12 +124,20 @@ public:
         }
         const std::size_t transferCount = std::min<std::size_t>(
                 byteCount,
+#ifdef _WIN32
+                std::numeric_limits<unsigned int>::max());
+        int result = ::_read(
+                descriptor,
+                destination,
+                static_cast<unsigned int>(transferCount));
+#else
                 static_cast<std::size_t>(
                         std::numeric_limits<ssize_t>::max()));
         ssize_t result;
         do {
             result = ::read(descriptor, destination, transferCount);
         } while (result < 0 && errno == EINTR);
+#endif
         if (result < 0) {
             healthy = false;
             return std::nullopt;
@@ -119,12 +157,20 @@ public:
         }
         const std::size_t transferCount = std::min<std::size_t>(
                 byteCount,
+#ifdef _WIN32
+                std::numeric_limits<unsigned int>::max());
+        int result = ::_write(
+                descriptor,
+                source,
+                static_cast<unsigned int>(transferCount));
+#else
                 static_cast<std::size_t>(
                         std::numeric_limits<ssize_t>::max()));
         ssize_t result;
         do {
             result = ::write(descriptor, source, transferCount);
         } while (result < 0 && errno == EINTR);
+#endif
         if (result < 0) {
             healthy = false;
             return std::nullopt;
@@ -138,16 +184,21 @@ public:
             return std::nullopt;
         }
         const bool seekToEnd = offset == ClassicBufferEndOffset;
-        const off_t distance = seekToEnd
-                ? static_cast<off_t>(0)
-                : static_cast<off_t>(offset);
+        const auto distance = seekToEnd ? 0 : offset;
+#ifdef _WIN32
+        const __int64 result = ::_lseeki64(
+                descriptor,
+                static_cast<__int64>(distance),
+                seekToEnd ? SEEK_END : SEEK_SET);
+#else
         off_t result;
         do {
             result = ::lseek(
                     descriptor,
-                    distance,
+                    static_cast<off_t>(distance),
                     seekToEnd ? SEEK_END : SEEK_SET);
         } while (result < 0 && errno == EINTR);
+#endif
         if (result < 0 ||
             static_cast<unsigned long long>(result) >
                     ClassicBufferMaximumExtent) {
@@ -162,11 +213,16 @@ public:
             healthy = false;
             return std::nullopt;
         }
+#ifdef _WIN32
+        struct _stati64 status {};
+        const int result = ::_fstati64(descriptor, &status);
+#else
         struct stat status {};
         int result;
         do {
             result = ::fstat(descriptor, &status);
         } while (result != 0 && errno == EINTR);
+#endif
         if (result != 0 || status.st_size < 0) {
             healthy = false;
             return std::nullopt;
@@ -180,9 +236,13 @@ public:
             return false;
         }
         int result;
+#ifdef _WIN32
+        result = ::_commit(descriptor);
+#else
         do {
             result = ::fsync(descriptor);
         } while (result != 0 && errno == EINTR);
+#endif
         if (result != 0) {
             healthy = false;
             return false;
@@ -197,7 +257,12 @@ public:
         const bool wasHealthy = healthy;
         const int closingDescriptor = descriptor;
         descriptor = -1;
-        if (::close(closingDescriptor) != 0) {
+#ifdef _WIN32
+        const int closeResult = ::_close(closingDescriptor);
+#else
+        const int closeResult = ::close(closingDescriptor);
+#endif
+        if (closeResult != 0) {
             healthy = false;
             return false;
         }
@@ -223,9 +288,13 @@ private:
         }
         healthy = true;
         int openedDescriptor;
+#ifdef _WIN32
+        openedDescriptor = ::_wopen(path.c_str(), flags, permissions);
+#else
         do {
             openedDescriptor = ::open(path.c_str(), flags, permissions);
         } while (openedDescriptor < 0 && errno == EINTR);
+#endif
         if (openedDescriptor >= 0) {
             descriptor = openedDescriptor;
             return NativeOpenResult::Opened;
@@ -253,7 +322,13 @@ bool CreateTemporaryFile(
     const std::filesystem::path directory = target.parent_path();
     const std::string baseName = target.filename().string();
     const std::string processId = std::to_string(
-            static_cast<unsigned long>(::getpid()));
+            static_cast<unsigned long>(
+#ifdef _WIN32
+                    ::_getpid()
+#else
+                    ::getpid()
+#endif
+                    ));
     for (unsigned int attempt = 0u; attempt < 4096u; ++attempt) {
         const unsigned long long id = NextTemporaryFileId.fetch_add(1u);
         const std::filesystem::path candidate = directory /
@@ -281,24 +356,42 @@ bool EnsureWritableTarget(const std::filesystem::path &target) {
 }
 
 bool RemoveFile(const std::filesystem::path &path) {
+#ifdef _WIN32
+    std::error_code error;
+    const bool removed = std::filesystem::remove(path, error);
+    return removed || (!error && !std::filesystem::exists(path, error));
+#else
     int result;
     do {
         result = ::unlink(path.c_str());
     } while (result != 0 && errno == EINTR);
     return result == 0 || errno == ENOENT;
+#endif
 }
 
 bool RenameReplacing(
         const std::filesystem::path &source,
         const std::filesystem::path &target) {
+#ifdef _WIN32
+    std::error_code error;
+    (void)std::filesystem::remove(target, error);
+    error.clear();
+    std::filesystem::rename(source, target, error);
+    return !error;
+#else
     int result;
     do {
         result = ::rename(source.c_str(), target.c_str());
     } while (result != 0 && errno == EINTR);
     return result == 0;
+#endif
 }
 
 bool SyncParentDirectory(const std::filesystem::path &target) {
+#ifdef _WIN32
+    (void)target;
+    return true;
+#else
     const std::filesystem::path directory = target.parent_path().empty()
             ? std::filesystem::path(".")
             : target.parent_path();
@@ -309,6 +402,7 @@ bool SyncParentDirectory(const std::filesystem::path &target) {
     }
     const bool synced = directoryHandle.Sync();
     return directoryHandle.Close() && synced;
+#endif
 }
 
 void AppendFilesystemUtf8(std::string &text, std::uint32_t codePoint) {
@@ -362,6 +456,7 @@ std::filesystem::path FromEngineName(const CFastStringInt &name) {
         }
         AppendFilesystemUtf8(nativeName, codePoint);
     }
+#ifndef _WIN32
     if (std::filesystem::path::preferred_separator != '\\') {
         std::replace(
                 nativeName.begin(),
@@ -369,6 +464,7 @@ std::filesystem::path FromEngineName(const CFastStringInt &name) {
                 '\\',
                 std::filesystem::path::preferred_separator);
     }
+#endif
     return std::filesystem::u8path(nativeName);
 }
 

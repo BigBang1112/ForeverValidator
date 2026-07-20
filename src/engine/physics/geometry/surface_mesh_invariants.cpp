@@ -92,6 +92,9 @@ static GmMeshOctreeCell BuildTriangleCell(
 
 namespace {
 
+// Archived octree bounds are quantized independently from vertex records.
+constexpr float kArchivedBoundsTolerance = 1.0f / 1024.0f;
+
 bool HasValidBounds(const GmBoxAligned &bounds) {
     return std::isfinite(bounds.center.x) &&
            std::isfinite(bounds.center.y) &&
@@ -107,29 +110,41 @@ bool HasValidBounds(const GmBoxAligned &bounds) {
 bool BoundsContainsPoint(
         const GmBoxAligned &bounds,
         const GmVec3 &point) {
-    return point.x >= bounds.center.x - bounds.halfExtents.x &&
-           point.x <= bounds.center.x + bounds.halfExtents.x &&
-           point.y >= bounds.center.y - bounds.halfExtents.y &&
-           point.y <= bounds.center.y + bounds.halfExtents.y &&
-           point.z >= bounds.center.z - bounds.halfExtents.z &&
-           point.z <= bounds.center.z + bounds.halfExtents.z;
+    return point.x >= bounds.center.x - bounds.halfExtents.x -
+                       kArchivedBoundsTolerance &&
+           point.x <= bounds.center.x + bounds.halfExtents.x +
+                       kArchivedBoundsTolerance &&
+           point.y >= bounds.center.y - bounds.halfExtents.y -
+                       kArchivedBoundsTolerance &&
+           point.y <= bounds.center.y + bounds.halfExtents.y +
+                       kArchivedBoundsTolerance &&
+           point.z >= bounds.center.z - bounds.halfExtents.z -
+                       kArchivedBoundsTolerance &&
+           point.z <= bounds.center.z + bounds.halfExtents.z +
+                       kArchivedBoundsTolerance;
 }
 
 bool BoundsContainsBounds(
         const GmBoxAligned &outer,
         const GmBoxAligned &inner) {
     return inner.center.x - inner.halfExtents.x >=
-                   outer.center.x - outer.halfExtents.x &&
+                   outer.center.x - outer.halfExtents.x -
+                       kArchivedBoundsTolerance &&
            inner.center.x + inner.halfExtents.x <=
-                   outer.center.x + outer.halfExtents.x &&
+                   outer.center.x + outer.halfExtents.x +
+                       kArchivedBoundsTolerance &&
            inner.center.y - inner.halfExtents.y >=
-                   outer.center.y - outer.halfExtents.y &&
+                   outer.center.y - outer.halfExtents.y -
+                       kArchivedBoundsTolerance &&
            inner.center.y + inner.halfExtents.y <=
-                   outer.center.y + outer.halfExtents.y &&
+                   outer.center.y + outer.halfExtents.y +
+                       kArchivedBoundsTolerance &&
            inner.center.z - inner.halfExtents.z >=
-                   outer.center.z - outer.halfExtents.z &&
+                   outer.center.z - outer.halfExtents.z -
+                       kArchivedBoundsTolerance &&
            inner.center.z + inner.halfExtents.z <=
-                   outer.center.z + outer.halfExtents.z;
+                   outer.center.z + outer.halfExtents.z +
+                       kArchivedBoundsTolerance;
 }
 
 bool ValidateOctreeNode(const std::vector<GmMeshOctreeCell> &cells,
@@ -267,7 +282,8 @@ void GmSurfMesh::BuildOctree(void) {
 bool GmSurfMesh::SetGeometry(
         std::vector<GmVec3> meshVertices,
         std::vector<GmSurfMeshTriangle> meshTriangles,
-        std::vector<GmMeshOctreeCell> meshOctreeCells) {
+        std::vector<GmMeshOctreeCell> meshOctreeCells,
+        PlaneSource planeSource) {
     if (!ValidateTriangleIndices(meshVertices, meshTriangles)) {
         return false;
     }
@@ -276,7 +292,9 @@ bool GmSurfMesh::SetGeometry(
         GmSurfMesh candidate;
         candidate.vertices = std::move(meshVertices);
         candidate.triangles = std::move(meshTriangles);
-        candidate.RecomputeAllPlanes();
+        if (planeSource == PlaneSource::Generated) {
+            candidate.RecomputeAllPlanes();
+        }
 
         if (candidate.triangles.empty()) {
             candidate.octreeCells.clear();

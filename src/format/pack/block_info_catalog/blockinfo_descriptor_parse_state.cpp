@@ -42,6 +42,39 @@ int BlockInfoParsedMobilCollection::Append(
     }
 }
 
+int BlockInfoParsedMobilCollection::RecordArchiveLocalRef(
+        u32 archiveNodeIndex,
+        const BlockInfoParsedMobilSlot &slot,
+        bool hasInlineSceneMobil) {
+    for (ArchiveLocalNode &node : archiveLocalNodes) {
+        if (node.archiveNodeIndex != archiveNodeIndex) {
+            continue;
+        }
+        if (hasInlineSceneMobil) {
+            // A forward reference or a second inline definition is ambiguous.
+            return 0;
+        }
+        if (!node.hasInlineSceneMobil) {
+            // Preserve the pre-existing optional unresolved-reference behavior.
+            return 1;
+        }
+        try {
+            archiveLocalAliases.push_back({node.source, slot});
+            return 1;
+        } catch (const std::bad_alloc &) {
+            return 0;
+        }
+    }
+
+    try {
+        archiveLocalNodes.push_back(
+                {archiveNodeIndex, slot, hasInlineSceneMobil});
+        return 1;
+    } catch (const std::bad_alloc &) {
+        return 0;
+    }
+}
+
 u32 BlockInfoParsedMobilCollection::Count() const {
     return static_cast<u32>(mobils.size());
 }
@@ -49,6 +82,32 @@ u32 BlockInfoParsedMobilCollection::Count() const {
 const BlockInfoParsedMobil *BlockInfoParsedMobilCollection::ModelAt(
         u32 index) const {
     return index < mobils.size() ? &mobils[index] : nullptr;
+}
+
+const std::vector<BlockInfoParsedMobilAlias> &
+BlockInfoParsedMobilCollection::ArchiveLocalAliases() const {
+    return archiveLocalAliases;
+}
+
+std::optional<BlockInfoParsedMobilSlot>
+BlockInfoParsedMobilCollection::ResolveArchiveLocalSource(
+        ArchiveNodeReference sourceNode) const {
+    if (!sourceNode.IsValid()) {
+        return std::nullopt;
+    }
+    const ArchiveLocalNode *match = nullptr;
+    for (const ArchiveLocalNode &node : archiveLocalNodes) {
+        if (node.archiveNodeIndex != sourceNode.Index()) {
+            continue;
+        }
+        if (match != nullptr || !node.hasInlineSceneMobil) {
+            return std::nullopt;
+        }
+        match = &node;
+    }
+    return match != nullptr
+            ? std::optional<BlockInfoParsedMobilSlot>(match->source)
+            : std::nullopt;
 }
 
 void BlockInfoParsedMobilCollection::ApplyHmsState(
@@ -119,5 +178,19 @@ void BlockInfoParsedMobilCollection::MarkAppendedSceneObjectLink(
         u32 firstMobil) {
     for (u32 index = firstMobil; index < Count(); ++index) {
         mobils[index].isSceneObjectLinkMobil = 1u;
+    }
+}
+
+void BlockInfoParsedMobilCollection::MarkAppendedMotionChangesLocations(
+        u32 firstMobil) {
+    for (u32 index = firstMobil; index < Count(); ++index) {
+        mobils[index].motionChangesLocations = 1u;
+    }
+}
+
+void BlockInfoParsedMobilCollection::
+        MarkAppendedCollisionUsesInitialTransform(u32 firstMobil) {
+    for (u32 index = firstMobil; index < Count(); ++index) {
+        mobils[index].collisionUsesInitialTransform = 1u;
     }
 }

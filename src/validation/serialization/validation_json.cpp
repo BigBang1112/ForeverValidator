@@ -30,6 +30,10 @@ const char *ValidationStatusName(ValidationStatus status) {
         return "respawn_expectation_unavailable";
     case ValidationStatus::ObservationError:
         return "trajectory_observation_error";
+    case ValidationStatus::IncompatibleReplayVersion:
+        return "incompatible_replay_version";
+    case ValidationStatus::InputUnavailable:
+        return "validation_input_unavailable";
     }
     return "unexpected_validation_status";
 }
@@ -151,6 +155,11 @@ void AppendValidationMessageJson(
                 "\"trajectory observation error %u\"",
                 ObservationErrorCode(report.observationError));
         break;
+    case ValidationStatus::IncompatibleReplayVersion:
+        json.Append(
+                "\"Replay version: TMr.6 is not compatible with current "
+                "game version: TMr.7\"");
+        break;
     default:
         json.Append("null");
         break;
@@ -226,7 +235,23 @@ void AppendValidationMetadataJson(
         JsonText &json,
         const ValidationMetadata &metadata) {
     json.Append(",\"replay_file_metadata\":{");
-    json.Append("\"input_status\":1");
+    json.Append("\"map_environment\":");
+    json.AppendJsonString(MapEnvironmentName(metadata.mapEnvironment));
+    json.Append(",\"vehicle_model\":");
+    json.AppendJsonString(VehicleModelName(metadata.vehicleModel));
+    json.Append(",\"play_mode\":");
+    if (metadata.playMode.has_value()) {
+        json.AppendJsonString(PlayModeName(*metadata.playMode));
+    } else {
+        json.Append("null");
+    }
+    json.Append(",\"expected_stunts_score\":");
+    if (metadata.expectedStuntsScore.has_value()) {
+        json.AppendFormat("%u", *metadata.expectedStuntsScore);
+    } else {
+        json.Append("null");
+    }
+    json.Append(",\"input_status\":1");
     json.Append(",\"input_parse_failed\":false");
     json.Append(",\"state_status\":1");
     json.Append(",\"state_parse_failed\":false");
@@ -252,6 +277,31 @@ void AppendValidationMetadataJson(
     json.Append("}");
 }
 
+void AppendSimulationOutcomeJson(
+        JsonText &json,
+        const SimulationOutcome &simulation) {
+    json.Append(",\"simulation_outcome\":{");
+    json.Append("\"race_completed\":");
+    if (simulation.raceCompleted.has_value()) {
+        json.Append(*simulation.raceCompleted ? "true" : "false");
+    } else {
+        json.Append("null");
+    }
+    json.Append(",\"race_time_ms\":");
+    if (simulation.raceTimeMs.has_value()) {
+        json.AppendFormat("%d", *simulation.raceTimeMs);
+    } else {
+        json.Append("null");
+    }
+    json.Append(",\"stunts_score\":");
+    if (simulation.stuntsScore.has_value()) {
+        json.AppendFormat("%d", *simulation.stuntsScore);
+    } else {
+        json.Append("null");
+    }
+    json.AppendFormat(",\"respawn_count\":%u}", simulation.respawnCount);
+}
+
 ValidationError SerializationError(const ReplayIdentity &identity) {
     ValidationError error;
     error.category = ValidationErrorCategory::Serialization;
@@ -272,6 +322,7 @@ Result<std::string> SerializeValidationReport(
         json.Append("{");
         AppendValidationResultJson(json, report);
         AppendValidationMetadataJson(json, report.metadata);
+        AppendSimulationOutcomeJson(json, report.simulation);
         json.Append(",\"schema\":\"forevervalidator-result-v1\"");
         json.Append(",\"replay\":");
         json.AppendJsonString(report.replay.name);

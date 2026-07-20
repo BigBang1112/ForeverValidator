@@ -78,6 +78,15 @@ void ReplaySimulationSession::ActivateStaticScene() {
     impl->mapScene.Activate();
 }
 
+void ReplaySimulationSession::ConfigureReplayRace(
+        EChallengePlayMode playMode,
+        bool isLapRace,
+        std::uint32_t lapCount) {
+    impl->race.SetReplayChallengePlayMode(playMode);
+    impl->race.InitNbLapsAndCheckpoints(
+            isLapRace ? lapCount : 1u);
+}
+
 ReplaySimulationTimelineResult ReplaySimulationSession::SimulateTimeline(
         const ReplaySimulationDefinition &simulationDefinition,
         const std::vector<ReplayControlTick> &controlTicks,
@@ -139,7 +148,17 @@ ReplaySimulationTimelineResult ReplaySimulationSession::SimulateTimeline(
         }
     }
     result.finishTimeMs = impl->runtime->FinishTimeMs();
+    result.stuntsScore = impl->runtime->StuntsScore();
     result.raceCompleted = result.finishTimeMs.has_value();
     result.result = ReplaySimulationRunResult::Success;
     return result;
+}
+
+std::optional<std::uint32_t>
+ReplaySimulationSession::ApplyReplayStuntTimePenalty(
+        std::uint32_t overtimeMs) {
+    if (!impl->runtime) {
+        return std::nullopt;
+    }
+    return impl->runtime->ApplyReplayStuntTimePenalty(overtimeMs);
 }

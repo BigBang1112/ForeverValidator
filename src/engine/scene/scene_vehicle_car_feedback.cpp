@@ -524,8 +524,12 @@ int CSceneVehicleCar::ApplyWaterForces(const GmVec3 &forceToSubtract) {
     if (horizontalSpeedSq > horizontalThreshold * horizontalThreshold) {
       float horizontalSpeed = CIsqrt(horizontalSpeedSq);
       splashCurveInput = -horizontalSpeed / localSpeed.y;
-      if (splashCurveInput == splashCurveInput && !(splashCurveInput < 0.0f)) {
+      if (splashCurveInput != splashCurveInput) {
+        return 0;
+      }
+      if (!(splashCurveInput < 0.0f)) {
         ApplyWaterSplashImpulse(*tuning, *iso, localSpeed, splashCurveInput);
+        return 0;
       }
     } else {
       float totalThreshold = tuning->water.splashTotalSpeedThreshold;
@@ -533,11 +537,8 @@ int CSceneVehicleCar::ApplyWaterForces(const GmVec3 &forceToSubtract) {
           totalThreshold * totalThreshold) {
         splashCurveInput = 0.0f;
         ApplyWaterSplashImpulse(*tuning, *iso, localSpeed, splashCurveInput);
+        return 0;
       }
-    }
-
-    if (!(splashCurveInput < 0.0f)) {
-      return 0;
     }
   }
 

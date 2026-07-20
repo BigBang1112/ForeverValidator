@@ -6,12 +6,15 @@
 #include "format/pack/block_info_catalog/blockunitinfo_archive_chunk_ids.h"
 #include "format/archive/scene_object_archive_chunk_ids.h"
 #include "format/archive/scene_object_link_archive_chunk_ids.h"
+#include "format/static_solid/static_solid_archive_animation_motion_chunk_ids.h"
 #include "format/replay/replay_static_descriptor_limits.h"
 #include "format/archive/tmnf_archive_ids.h"
 #include "format/archive/mw_id_archive_codec.h"
 #include <charconv>
-#include <utility>
+#include <limits>
+#include <map>
 #include <new>
+#include <utility>
 
 static void BlockInfoArchiveStream_CopyBytesToFixed(char *dst,
                                                     size_t dstSize,
@@ -406,7 +409,7 @@ int BlockInfoSizeParseStream::SkipNodRefPayload(
     if (sourceNode.IsInvalid()) {
         return 1;
     }
-    if (offset <= byteCount - 4u) {
+    if (offset <= byteCount && byteCount - offset >= 4u) {
         const u32 nextWord =
                 TmnfFormat::ArchiveBinary::ReadU32LE(bytes + offset);
         if (nextWord == TMNF_CLASS_CGameCtnBlockUnitInfo) {
@@ -439,22 +442,558 @@ int BlockInfoSizeParseStream::WordIsSceneObjectLinkChunk(u32 word) {
            word == CMwNodArchiveFacadeSentinel;
 }
 
-int BlockInfoSizeParseStream::SkipInlineMotionToSceneChunk() {
-    if (offset > byteCount ||
-        byteCount - offset < 4u) {
-        return 0;
+namespace {
+
+struct BlockInfoInlineCMotionsNodeState {
+    u32 classId = 0u;
+    u32 boneCount = 0u;
+    u32 hasBoneCount = 0u;
+    ArchiveNodeReference skeleton = ArchiveNodeReference::Invalid();
+};
+
+class BlockInfoInlineCMotionsParser {
+public:
+    explicit BlockInfoInlineCMotionsParser(BlockInfoSizeParseStream *stream)
+            : stream_(stream) {}
+
+    int Parse(ArchiveNodeReference rootNode, u32 rootClassId) {
+        return stream_ != nullptr &&
+               stream_->blockInfoSourceRefs != nullptr &&
+               rootNode.IsValid() &&
+               ValidateNodeBounds(rootNode) &&
+               IsSupportedInlineClass(rootClassId) &&
+               RememberNode(rootNode, rootClassId) &&
+               ParseNodeArchive(rootNode, rootClassId);
     }
-    for (u32 cursor = offset;
-         cursor <= byteCount - 4u;
-         cursor++) {
-        const u32 word =
-                TmnfFormat::ArchiveBinary::ReadU32LE(bytes + cursor);
-        if (IsCSceneMobilInfo3Chunk(word)) {
-            offset = cursor;
+
+    int ChangesLocations() const {
+        return hasSkeletonMotion_ != 0 || hasEmitterLeavesMotion_ != 0;
+    }
+
+    int CollisionUsesInitialTransform() const {
+        return hasEmitterLeavesMotion_ != 0 && hasSkeletonMotion_ == 0;
+    }
+
+private:
+    static constexpr u32 MaxCount = 0x100000u;
+    static constexpr u32 MaxNestedDepth = 64u;
+    static constexpr u32 CFuncKeysLocationByteCount =
+            7u * sizeof(float);
+
+    static int IsSupportedInlineClass(u32 classId) {
+        return classId == TMNF_CLASS_CMotions ||
+               classId == TMNF_CLASS_CMotionPlayer ||
+               classId == TMNF_CLASS_CMotionSkel ||
+               classId == TMNF_CLASS_CMotionEmitterLeaves ||
+               classId == TMNF_CLASS_CMotionManagerLeaves ||
+               classId == TMNF_CLASS_CMotionShader ||
+               classId == TMNF_CLASS_CFuncKeysSkel ||
+               classId == TMNF_CLASS_CFuncSkel ||
+               classId == TMNF_CLASS_CFuncKeysNatural;
+    }
+
+    int ValidateNodeBounds(ArchiveNodeReference node) const {
+        return node.IsValid() &&
+               stream_->blockInfoSourceRefs != nullptr &&
+               node.Index() <= stream_->blockInfoSourceRefs
+                                      ->NodeCountForFormatBounds();
+    }
+
+    int RememberNode(ArchiveNodeReference node, u32 classId) {
+        if (!ValidateNodeBounds(node)) {
+            return 0;
+        }
+        const auto known = nodes_.find(node.Index());
+        if (known != nodes_.end()) {
+            return known->second.classId == classId;
+        }
+        try {
+            nodes_.emplace(node.Index(),
+                           BlockInfoInlineCMotionsNodeState{classId});
+            if (classId == TMNF_CLASS_CMotionSkel) {
+                hasSkeletonMotion_ = 1;
+            } else if (classId == TMNF_CLASS_CMotionEmitterLeaves) {
+                hasEmitterLeavesMotion_ = 1;
+            }
             return 1;
+        } catch (const std::bad_alloc &) {
+            return 0;
         }
     }
-    return 0;
+
+    int ReadNodeRef(ArchiveNodeReference *nodeOut = nullptr) {
+        ArchiveNodeReference node = ArchiveNodeReference::Invalid();
+        if (!stream_->ReadArchiveNodeRef(&node) || node.IsDeferred()) {
+            return 0;
+        }
+        if (nodeOut != nullptr) {
+            *nodeOut = node;
+        }
+        if (node.IsInvalid()) {
+            return 1;
+        }
+        if (!ValidateNodeBounds(node)) {
+            return 0;
+        }
+        if (stream_->blockInfoSourceRefs->FindReference(node) != nullptr) {
+            return 1;
+        }
+        if (nodes_.find(node.Index()) != nodes_.end()) {
+            return 1;
+        }
+        if (stream_->offset > stream_->byteCount ||
+            stream_->byteCount - stream_->offset < sizeof(u32)) {
+            return 0;
+        }
+        const u32 classId = TmnfFormat::ArchiveBinary::ReadU32LE(
+                stream_->bytes + stream_->offset);
+        if (!IsSupportedInlineClass(classId)) {
+            return 0;
+        }
+        u32 consumedClassId = 0u;
+        return stream_->ReadU32(&consumedClassId) &&
+               RememberNode(node, consumedClassId) &&
+               ParseNodeArchive(node, consumedClassId);
+    }
+
+    int ReadCountedNodeRefs() {
+        u32 count = 0u;
+        if (!stream_->ReadU32(&count) || count > MaxCount) {
+            return 0;
+        }
+        for (u32 index = 0u; index < count; ++index) {
+            if (!ReadNodeRef()) {
+                return 0;
+            }
+        }
+        return 1;
+    }
+
+    int ReadCFuncSkelBones(ArchiveNodeReference node,
+                           int hasElementArrays) {
+        u32 boneCount = 0u;
+        if (!stream_->ReadU32(&boneCount) || boneCount > MaxCount) {
+            return 0;
+        }
+        for (u32 bone = 0u; bone < boneCount; ++bone) {
+            if (!stream_->SkipCMwId()) {
+                return 0;
+            }
+            if (hasElementArrays) {
+                u32 elementCount = 0u;
+                if (!stream_->ReadU32(&elementCount) ||
+                    elementCount > MaxCount ||
+                    elementCount >
+                            std::numeric_limits<u32>::max() / sizeof(u32) ||
+                    !stream_->Skip(elementCount * sizeof(u32))) {
+                    return 0;
+                }
+            }
+        }
+        const auto known = nodes_.find(node.Index());
+        if (known == nodes_.end() ||
+            known->second.classId != TMNF_CLASS_CFuncSkel) {
+            return 0;
+        }
+        known->second.boneCount = boneCount;
+        known->second.hasBoneCount = 1u;
+        return 1;
+    }
+
+    int ReadCFuncSkelLegacyTable(int idsInsteadOfStrings) {
+        u32 count = 0u;
+        if (!stream_->ReadU32(&count) || count > MaxCount) {
+            return 0;
+        }
+        for (u32 index = 0u; index < count; ++index) {
+            const int keyRead = idsInsteadOfStrings
+                    ? stream_->SkipCMwId()
+                    : stream_->SkipString();
+            if (!keyRead || !stream_->Skip(sizeof(u32))) {
+                return 0;
+            }
+        }
+        return 1;
+    }
+
+    int ParseCFuncSkelChunk(ArchiveNodeReference node, u32 chunkId) {
+        switch (chunkId) {
+        case ArchiveChunkIdValue(CFuncSkelArchiveChunkId::LegacyStringTable):
+            return ReadCFuncSkelLegacyTable(0) &&
+                   ReadCFuncSkelBones(node, 1);
+        case ArchiveChunkIdValue(CFuncSkelArchiveChunkId::LegacyIdTable):
+            return ReadCFuncSkelLegacyTable(1) &&
+                   ReadCFuncSkelBones(node, 1);
+        case ArchiveChunkIdValue(CFuncSkelArchiveChunkId::BoneIds):
+            return ReadCFuncSkelBones(node, 0);
+        default:
+            return 0;
+        }
+    }
+
+    int ParseCFuncKeysChunk(u32 chunkId) {
+        switch (chunkId) {
+        case ArchiveChunkIdValue(CFuncKeysArchiveChunkId::Root):
+            return stream_->SkipString();
+        case ArchiveChunkIdValue(CFuncKeysArchiveChunkId::XValues):
+        case TMNF_CLASS_CFuncKeysNatural: {
+            u32 count = 0u;
+            return stream_->ReadU32(&count) && count <= MaxCount &&
+                   count <= std::numeric_limits<u32>::max() / sizeof(float) &&
+                   stream_->Skip(count * sizeof(float));
+        }
+        case ArchiveChunkIdValue(
+                CFuncKeysArchiveChunkId::TwoRealCompatibilityRange):
+            return stream_->Skip(2u * sizeof(float));
+        case ArchiveChunkIdValue(CFuncKeysArchiveChunkId::Id):
+            return stream_->SkipCMwId();
+        default:
+            return 0;
+        }
+    }
+
+    int ParseCFuncKeysSkelChunk(ArchiveNodeReference node, u32 chunkId) {
+        if (IsCFuncKeysInfo1Chunk(chunkId) ||
+            IsCFuncKeysInfo3Chunk(chunkId)) {
+            return ParseCFuncKeysChunk(chunkId);
+        }
+        const auto keys = nodes_.find(node.Index());
+        if (keys == nodes_.end() ||
+            keys->second.classId != TMNF_CLASS_CFuncKeysSkel) {
+            return 0;
+        }
+        switch (chunkId) {
+        case ArchiveChunkIdValue(CFuncKeysSkelArchiveChunkId::SkeletonRef): {
+            ArchiveNodeReference skeleton = ArchiveNodeReference::Invalid();
+            if (!ReadNodeRef(&skeleton) || !skeleton.IsValid()) {
+                return 0;
+            }
+            const auto parsedSkeleton = nodes_.find(skeleton.Index());
+            if (parsedSkeleton == nodes_.end() ||
+                parsedSkeleton->second.classId != TMNF_CLASS_CFuncSkel ||
+                parsedSkeleton->second.hasBoneCount == 0u) {
+                return 0;
+            }
+            keys->second.skeleton = skeleton;
+            return 1;
+        }
+        case ArchiveChunkIdValue(CFuncKeysSkelArchiveChunkId::Locations): {
+            if (!keys->second.skeleton.IsValid()) {
+                return 0;
+            }
+            const auto skeleton = nodes_.find(keys->second.skeleton.Index());
+            u32 frameCount = 0u;
+            if (skeleton == nodes_.end() ||
+                skeleton->second.hasBoneCount == 0u ||
+                !stream_->ReadU32(&frameCount) || frameCount > MaxCount ||
+                (skeleton->second.boneCount != 0u &&
+                 frameCount > std::numeric_limits<u32>::max() /
+                                      skeleton->second.boneCount)) {
+                return 0;
+            }
+            const u32 locationCount =
+                    frameCount * skeleton->second.boneCount;
+            return locationCount == 0u ||
+                   (locationCount <= std::numeric_limits<u32>::max() /
+                                             CFuncKeysLocationByteCount &&
+                    stream_->Skip(locationCount *
+                                  CFuncKeysLocationByteCount));
+        }
+        default:
+            return 0;
+        }
+    }
+
+    int ParseCMotionCmdBaseArchive() {
+        for (;;) {
+            u32 chunkId = 0u;
+            if (!stream_->ReadU32(&chunkId)) {
+                return 0;
+            }
+            if (chunkId == CMwNodArchiveFacadeSentinel) {
+                return 1;
+            }
+            switch (chunkId) {
+            case TMNF_CLASS_CMotionCmdBase:
+                if (!stream_->Skip(4u * sizeof(float))) return 0;
+                break;
+            case ArchiveChunkIdValue(CMotionCmdBaseArchiveChunkId::BaseBool):
+                if (!stream_->Skip(5u * sizeof(u32))) return 0;
+                break;
+            case ArchiveChunkIdValue(
+                    CMotionCmdBaseArchiveChunkId::BaseParamsRef):
+                if (!stream_->Skip(6u * sizeof(u32))) return 0;
+                break;
+            case ArchiveChunkIdValue(CMotionCmdBaseArchiveChunkId::PeriodAndPhase):
+                if (!stream_->Skip(2u * sizeof(float))) return 0;
+                break;
+            case ArchiveChunkIdValue(
+                    CMotionCmdBaseArchiveChunkId::PeriodPhaseAndTimeBase):
+                if (!stream_->Skip(3u * sizeof(float))) return 0;
+                break;
+            case ArchiveChunkIdValue(
+                    CMotionCmdBaseArchiveChunkId::
+                            PeriodPhaseTimeBaseAndLoop):
+                if (!stream_->Skip(4u * sizeof(u32))) return 0;
+                break;
+            case ArchiveChunkIdValue(
+                    CMotionCmdBaseArchiveChunkId::
+                            PeriodPhaseTimeBaseLoopAndOffset):
+                if (!stream_->Skip(5u * sizeof(u32))) return 0;
+                break;
+            default:
+                return 0;
+            }
+        }
+    }
+
+    int ReadCMotionPlayerOptionalRef() {
+        u32 hasRef = 0u;
+        return stream_->ReadU32(&hasRef) &&
+               (hasRef == 0u || ReadNodeRef());
+    }
+
+    int ReadCMotionPlayerBaseAndRefs(int hasTrackRef, int hasStateBool) {
+        u32 ignoredStateBool = 0u;
+        if ((hasTrackRef != 0 && !ReadNodeRef()) ||
+            !ParseCMotionCmdBaseArchive() ||
+            !stream_->Skip(sizeof(u32)) ||
+            (hasStateBool != 0 &&
+             !stream_->ReadU32(&ignoredStateBool)) ||
+            !stream_->SkipCMwId()) {
+            return 0;
+        }
+        return ReadCountedNodeRefs();
+    }
+
+    int ParseCMotionPlayerChunk(u32 chunkId) {
+        switch (chunkId) {
+        case TMNF_CLASS_CMotion:
+            return stream_->SkipCMwId();
+        case ArchiveChunkIdValue(CMotionPlayerArchiveChunkId::Root):
+            return ReadCMotionPlayerOptionalRef();
+        case ArchiveChunkIdValue(
+                CMotionPlayerArchiveChunkId::ConditionalBaseAndId):
+            return ReadCMotionPlayerOptionalRef() && stream_->SkipCMwId();
+        case ArchiveChunkIdValue(
+                CMotionPlayerArchiveChunkId::TrackThenBaseAndRefs):
+            return ReadCMotionPlayerBaseAndRefs(1, 0);
+        case ArchiveChunkIdValue(CMotionPlayerArchiveChunkId::BaseAndRefs):
+            return ReadCMotionPlayerBaseAndRefs(0, 0);
+        case ArchiveChunkIdValue(
+                CMotionPlayerArchiveChunkId::FullStateAndRefs):
+            return ReadCMotionPlayerBaseAndRefs(0, 1);
+        default:
+            return 0;
+        }
+    }
+
+    int ParseCMotionEmitterLeavesChunk(u32 chunkId) {
+        if (chunkId == TMNF_CLASS_CMotion) {
+            return stream_->SkipCMwId();
+        }
+        if (chunkId != ArchiveChunkIdValue(
+                               CMotionEmitterLeavesArchiveChunkId::
+                                       PositionAndScalarRadius) &&
+            chunkId != ArchiveChunkIdValue(
+                               CMotionEmitterLeavesArchiveChunkId::
+                                       PositionAndRadius)) {
+            return 0;
+        }
+        if (!ReadNodeRef() || !stream_->Skip(3u * sizeof(float))) {
+            return 0;
+        }
+        const u32 radiusCount = chunkId == ArchiveChunkIdValue(
+                CMotionEmitterLeavesArchiveChunkId::
+                        PositionAndScalarRadius) ? 1u : 3u;
+        return stream_->Skip(radiusCount * sizeof(float));
+    }
+
+    int ParseCMotionManagerLeavesChunk(u32 chunkId) {
+        return chunkId == ArchiveChunkIdValue(
+                                  CMotionManagerLeavesArchiveChunkId::
+                                          MobilModel) &&
+               ReadNodeRef();
+    }
+
+    static int IsChunkSupported(u32 classId, u32 chunkId) {
+        if (classId == TMNF_CLASS_CMotions) {
+            return chunkId == TMNF_CLASS_CMotion ||
+                   chunkId == ArchiveChunkIdValue(
+                                      CMotionsArchiveChunkId::Root) ||
+                   chunkId == ArchiveChunkIdValue(
+                                      CMotionsArchiveChunkId::MotionRefs);
+        }
+        if (classId == TMNF_CLASS_CMotionPlayer) {
+            return IsCMotionPlayerInfo1Chunk(chunkId) ||
+                   IsCMotionPlayerInfo3Chunk(chunkId);
+        }
+        if (classId == TMNF_CLASS_CMotionSkel) {
+            return IsCMotionSkelInfo3Chunk(chunkId);
+        }
+        if (classId == TMNF_CLASS_CMotionEmitterLeaves) {
+            return IsCMotionEmitterLeavesInfo1Chunk(chunkId) ||
+                   IsCMotionEmitterLeavesInfo3Chunk(chunkId);
+        }
+        if (classId == TMNF_CLASS_CMotionManagerLeaves) {
+            return IsCMotionManagerLeavesInfo3Chunk(chunkId);
+        }
+        if (classId == TMNF_CLASS_CMotionShader) {
+            return IsCMotionShaderInfo3Chunk(chunkId);
+        }
+        if (classId == TMNF_CLASS_CFuncSkel) {
+            return IsCFuncSkelInfo1Chunk(chunkId) ||
+                   IsCFuncSkelInfo3Chunk(chunkId);
+        }
+        if (classId == TMNF_CLASS_CFuncKeysSkel) {
+            return IsCFuncKeysSkelInfo1Chunk(chunkId) ||
+                   IsCFuncKeysSkelInfo3Chunk(chunkId);
+        }
+        if (classId == TMNF_CLASS_CFuncKeysNatural) {
+            return IsCFuncKeysInfo1Chunk(chunkId) ||
+                   IsCFuncKeysInfo3Chunk(chunkId) ||
+                   IsCFuncKeysNaturalInfo3Chunk(chunkId);
+        }
+        return 0;
+    }
+
+    static int IsOwningSceneMobilChunk(u32 rawChunkId) {
+        const u32 chunkId =
+                NormalizePackedCSceneObjectOrMobilArchiveChunkId(rawChunkId);
+        return IsCSceneObjectInfo1Chunk(chunkId) ||
+               IsCSceneObjectInfo3Chunk(chunkId) ||
+               IsCSceneMobilInfo1Chunk(chunkId) ||
+               IsCSceneMobilInfo3Chunk(chunkId);
+    }
+
+    int ParseChunk(ArchiveNodeReference node, u32 classId, u32 chunkId) {
+        if (classId == TMNF_CLASS_CMotions) {
+            if (chunkId == TMNF_CLASS_CMotion) {
+                return stream_->SkipCMwId();
+            }
+            if (chunkId == ArchiveChunkIdValue(CMotionsArchiveChunkId::Root) ||
+                chunkId == ArchiveChunkIdValue(
+                                   CMotionsArchiveChunkId::MotionRefs)) {
+                return ReadCountedNodeRefs();
+            }
+            return 0;
+        }
+        if (classId == TMNF_CLASS_CMotionPlayer) {
+            return ParseCMotionPlayerChunk(chunkId);
+        }
+        if (classId == TMNF_CLASS_CMotionSkel) {
+            return chunkId ==
+                           ArchiveChunkIdValue(CMotionSkelArchiveChunkId::KeysRef) &&
+                   ReadNodeRef();
+        }
+        if (classId == TMNF_CLASS_CMotionEmitterLeaves) {
+            return ParseCMotionEmitterLeavesChunk(chunkId);
+        }
+        if (classId == TMNF_CLASS_CMotionManagerLeaves) {
+            return ParseCMotionManagerLeavesChunk(chunkId);
+        }
+        if (classId == TMNF_CLASS_CMotionShader) {
+            return IsCMotionShaderInfo3Chunk(chunkId) &&
+                   ReadNodeRef() && ReadNodeRef() && ReadNodeRef();
+        }
+        if (classId == TMNF_CLASS_CFuncSkel) {
+            return ParseCFuncSkelChunk(node, chunkId);
+        }
+        if (classId == TMNF_CLASS_CFuncKeysSkel) {
+            return ParseCFuncKeysSkelChunk(node, chunkId);
+        }
+        if (classId == TMNF_CLASS_CFuncKeysNatural) {
+            return ParseCFuncKeysChunk(chunkId);
+        }
+        return 0;
+    }
+
+    int ParseNodeArchive(ArchiveNodeReference node, u32 classId) {
+        if (depth_ >= MaxNestedDepth) {
+            return 0;
+        }
+        ++depth_;
+        for (;;) {
+            if (stream_->offset > stream_->byteCount ||
+                stream_->byteCount - stream_->offset < sizeof(u32)) {
+                --depth_;
+                return 0;
+            }
+            const u32 chunkId = TmnfFormat::ArchiveBinary::ReadU32LE(
+                    stream_->bytes + stream_->offset);
+            if (chunkId == CMwNodArchiveFacadeSentinel) {
+                stream_->offset += sizeof(u32);
+                --depth_;
+                return 1;
+            }
+            if (!IsChunkSupported(classId, chunkId)) {
+                int ownerBoundary = depth_ == 1u &&
+                        IsOwningSceneMobilChunk(chunkId);
+                --depth_;
+                return ownerBoundary;
+            }
+            stream_->offset += sizeof(u32);
+            if (!ParseChunk(node, classId, chunkId)) {
+                --depth_;
+                return 0;
+            }
+        }
+    }
+
+    BlockInfoSizeParseStream *stream_ = nullptr;
+    std::map<ArchiveNodeReference::IndexType,
+             BlockInfoInlineCMotionsNodeState> nodes_;
+    u32 depth_ = 0u;
+    int hasSkeletonMotion_ = 0;
+    int hasEmitterLeavesMotion_ = 0;
+};
+
+}  // namespace
+
+int BlockInfoSizeParseStream::ParseInlineCMotionsArchive(
+        ArchiveNodeReference rootNode,
+        int *changesLocationsOut,
+        int *collisionUsesInitialTransformOut) {
+    return ParseInlineMotionArchive(
+            rootNode,
+            TMNF_CLASS_CMotions,
+            changesLocationsOut,
+            collisionUsesInitialTransformOut);
+}
+
+int BlockInfoSizeParseStream::ParseInlineMotionArchive(
+        ArchiveNodeReference rootNode,
+        u32 rootClassId,
+        int *changesLocationsOut,
+        int *collisionUsesInitialTransformOut) {
+    if (changesLocationsOut != nullptr) {
+        *changesLocationsOut = 0;
+    }
+    if (collisionUsesInitialTransformOut != nullptr) {
+        *collisionUsesInitialTransformOut = 0;
+    }
+    if (blockInfoSourceRefs == nullptr) {
+        return 0;
+    }
+    BlockInfoSizeParseStream candidate{};
+    try {
+        candidate = *this;
+    } catch (const std::bad_alloc &) {
+        return 0;
+    }
+    BlockInfoInlineCMotionsParser parser(&candidate);
+    if (!parser.Parse(rootNode, rootClassId)) {
+        return 0;
+    }
+    *this = std::move(candidate);
+    if (changesLocationsOut != nullptr) {
+        *changesLocationsOut = parser.ChangesLocations();
+    }
+    if (collisionUsesInitialTransformOut != nullptr) {
+        *collisionUsesInitialTransformOut =
+                parser.CollisionUsesInitialTransform();
+    }
+    return 1;
 }
 
 int BlockInfoSizeParseStream::ReadBlockInfoSourceRef(
@@ -516,36 +1055,45 @@ int BlockInfoSizeParseStream::ParseUnitNode(
     if (outOffset == nullptr) {
         return 0;
     }
-    if (unitOut != nullptr) {
-        BlockInfoArchiveStream_ResetUnitDefinition(*unitOut);
-    }
+    u32 parsedOffset[3] = {0u, 0u, 0u};
+    BlockInfoDescriptorUnitDefinition parsedUnit;
     for (;;) {
         u32 chunkId = 0u;
         if (!ReadU32(&chunkId)) {
             return 0;
         }
         if (chunkId == CMwNodArchiveFacadeSentinel) {
+            outOffset[0] = parsedOffset[0];
+            outOffset[1] = parsedOffset[1];
+            outOffset[2] = parsedOffset[2];
+            if (unitOut != nullptr) {
+                *unitOut = std::move(parsedUnit);
+            }
             return 1;
         }
         switch (chunkId) {
         case TMNF_CLASS_CGameCtnBlockUnitInfo: {
+            u32 junctionMask = 0u;
+            u32 helper = 0u;
             u32 ignored = 0u;
             u32 sourceRefCount = 0u;
-            if (!ReadU32(&ignored) ||
+            if (!ReadU32(&junctionMask) ||
+                !ReadU32(&helper) ||
                 !ReadU32(&ignored) ||
-                !ReadU32(&ignored) ||
-                !ReadU32(&outOffset[0]) ||
-                !ReadU32(&outOffset[1]) ||
-                !ReadU32(&outOffset[2]) ||
+                !ReadU32(&parsedOffset[0]) ||
+                !ReadU32(&parsedOffset[1]) ||
+                !ReadU32(&parsedOffset[2]) ||
                 !ReadU32(&sourceRefCount) ||
                 sourceRefCount > 0x100000u) {
                 return 0;
             }
-            if (unitOut != nullptr) {
-                unitOut->offset.x = (int32_t)outOffset[0];
-                unitOut->offset.y = (int32_t)outOffset[1];
-                unitOut->offset.z = (int32_t)outOffset[2];
-            }
+            parsedUnit.junctionMask = junctionMask;
+            parsedUnit.helperMask = helper != 0u ? 0xffu : 0u;
+            parsedUnit.hasJunctionMask = true;
+            parsedUnit.hasHelperMask = true;
+            parsedUnit.offset.x = (int32_t)parsedOffset[0];
+            parsedUnit.offset.y = (int32_t)parsedOffset[1];
+            parsedUnit.offset.z = (int32_t)parsedOffset[2];
             for (u32 i = 0; i < sourceRefCount; i++) {
                 char descriptorPath[CGameCtnReplayStaticDescriptorPathCapacity];
                 char *descriptorOut =
@@ -561,7 +1109,7 @@ int BlockInfoSizeParseStream::ParseUnitNode(
                 }
                 if (descriptorOut != nullptr) {
                     try {
-                        unitOut->sourceDescriptorPaths[i] = descriptorPath;
+                        parsedUnit.sourceDescriptorPaths[i] = descriptorPath;
                     } catch (const std::bad_alloc &) {
                         return 0;
                     }
@@ -579,7 +1127,7 @@ int BlockInfoSizeParseStream::ParseUnitNode(
             }
             if (unitOut != nullptr) {
                 try {
-                    unitOut->surfaceIdName = surfaceIdName;
+                    parsedUnit.surfaceIdName = surfaceIdName;
                 } catch (const std::bad_alloc &) {
                     return 0;
                 }
@@ -599,9 +1147,8 @@ int BlockInfoSizeParseStream::ParseUnitNode(
                 !Skip(size - 4u)) {
                 return 0;
             }
-            if (unitOut != nullptr) {
-                unitOut->underground = underground != 0u;
-            }
+            parsedUnit.underground = underground != 0u;
+            parsedUnit.hasUnderground = true;
             break;
         }
         case ArchiveChunkIdValue(
@@ -616,16 +1163,20 @@ int BlockInfoSizeParseStream::ParseUnitNode(
             break;
         }
         case ArchiveChunkIdValue(
-                CGameCtnBlockUnitInfoArchiveChunkId::HelperMask):
-            if (!Skip(4u)) {
+                CGameCtnBlockUnitInfoArchiveChunkId::HelperMask): {
+            u32 helperMask = 0u;
+            if (!ReadU32(&helperMask)) {
                 return 0;
             }
+            parsedUnit.helperMask = helperMask;
+            parsedUnit.hasHelperMask = true;
             break;
+        }
         case ArchiveChunkIdValue(
                 CGameCtnBlockUnitInfoArchiveChunkId::TerrainModifier): {
             TmnfFormat::ArchiveIdentifierValue ignored;
             if (!ReadCMwIdValue(unitOut != nullptr
-                                        ? &unitOut->terrainModifierId
+                                        ? &parsedUnit.terrainModifierId
                                         : &ignored)) {
                 return 0;
             }
@@ -659,36 +1210,53 @@ int BlockInfoSizeParseStream::ReadUnitRef(
         u32 outOffset[3],
         u32 *hasOffsetOut,
         BlockInfoDescriptorUnitDefinition *unitOut) {
+    if (outOffset == nullptr) {
+        return 0;
+    }
     ArchiveNodeReference unitNode =
             ArchiveNodeReference::Invalid();
+    if (!ReadArchiveNodeRef(&unitNode)) {
+        return 0;
+    }
+    if (unitNode.IsInvalid()) {
+        if (hasOffsetOut != nullptr) {
+            *hasOffsetOut = 0u;
+        }
+        if (unitOut != nullptr) {
+            BlockInfoArchiveStream_ResetUnitDefinition(*unitOut);
+        }
+        return 1;
+    }
+    if (offset <= byteCount && byteCount - offset >= 4u) {
+        const u32 nextWord =
+                TmnfFormat::ArchiveBinary::ReadU32LE(bytes + offset);
+        if (nextWord == TMNF_CLASS_CGameCtnBlockUnitInfo) {
+            u32 classId = 0u;
+            u32 parsedOffset[3] = {0u, 0u, 0u};
+            BlockInfoDescriptorUnitDefinition parsedUnit;
+            if (!ReadU32(&classId) ||
+                !ParseUnitNode(parsedOffset, &parsedUnit)) {
+                return 0;
+            }
+            outOffset[0] = parsedOffset[0];
+            outOffset[1] = parsedOffset[1];
+            outOffset[2] = parsedOffset[2];
+            if (hasOffsetOut != nullptr) {
+                *hasOffsetOut = 1u;
+            }
+            if (unitOut != nullptr) {
+                *unitOut = std::move(parsedUnit);
+            }
+            return 1;
+        }
+    }
+    unresolvedUnitRefCount++;
     if (hasOffsetOut != nullptr) {
         *hasOffsetOut = 0u;
     }
     if (unitOut != nullptr) {
         BlockInfoArchiveStream_ResetUnitDefinition(*unitOut);
     }
-    if (!ReadArchiveNodeRef(&unitNode)) {
-        return 0;
-    }
-    if (unitNode.IsInvalid()) {
-        return 1;
-    }
-    if (offset <= byteCount - 4u) {
-        const u32 nextWord =
-                TmnfFormat::ArchiveBinary::ReadU32LE(bytes + offset);
-        if (nextWord == TMNF_CLASS_CGameCtnBlockUnitInfo) {
-            u32 classId = 0u;
-            if (!ReadU32(&classId) ||
-                !ParseUnitNode(outOffset, unitOut)) {
-                return 0;
-            }
-            if (hasOffsetOut != nullptr) {
-                *hasOffsetOut = 1u;
-            }
-            return 1;
-        }
-    }
-    unresolvedUnitRefCount++;
     return 1;
 }
 
@@ -699,12 +1267,10 @@ int BlockInfoSizeParseStream::ReadUnitLayout(
     if (!ReadU32(&count) || count > 0x100000u) {
         return 0;
     }
+    BlockInfoDescriptorUnitLayout parsedLayout;
+    std::vector<BlockInfoDescriptorUnitDefinition> parsedDefinitions;
     if (layoutOut != nullptr) {
-        layoutOut->Clear();
-        layoutOut->defined = true;
-    }
-    if (definitionsOut != nullptr) {
-        definitionsOut->clear();
+        parsedLayout.defined = true;
     }
     for (u32 i = 0u; i < count; i++) {
         u32 offset[3] = {0u, 0u, 0u};
@@ -726,14 +1292,14 @@ int BlockInfoSizeParseStream::ReadUnitLayout(
                 const u32 xSize = offset[0] + 1u;
                 const u32 ySize = offset[1] + 1u;
                 const u32 zSize = offset[2] + 1u;
-                if (xSize > layoutOut->dimensions.x) {
-                    layoutOut->dimensions.x = xSize;
+                if (xSize > parsedLayout.dimensions.x) {
+                    parsedLayout.dimensions.x = xSize;
                 }
-                if (ySize > layoutOut->dimensions.y) {
-                    layoutOut->dimensions.y = ySize;
+                if (ySize > parsedLayout.dimensions.y) {
+                    parsedLayout.dimensions.y = ySize;
                 }
-                if (zSize > layoutOut->dimensions.z) {
-                    layoutOut->dimensions.z = zSize;
+                if (zSize > parsedLayout.dimensions.z) {
+                    parsedLayout.dimensions.z = zSize;
                 }
             }
             try {
@@ -741,21 +1307,21 @@ int BlockInfoSizeParseStream::ReadUnitLayout(
                     BlockInfoDescriptorUnitPlacement placement;
                     placement.offset = unit.offset;
                     placement.underground = unit.underground;
-                    layoutOut->units.push_back(placement);
+                    parsedLayout.units.push_back(placement);
                 }
                 if (definitionsOut != nullptr) {
-                    definitionsOut->push_back(std::move(unit));
+                    parsedDefinitions.push_back(std::move(unit));
                 }
             } catch (const std::bad_alloc &) {
-                if (layoutOut != nullptr) {
-                    layoutOut->Clear();
-                }
-                if (definitionsOut != nullptr) {
-                    definitionsOut->clear();
-                }
                 return 0;
             }
         }
+    }
+    if (layoutOut != nullptr) {
+        *layoutOut = std::move(parsedLayout);
+    }
+    if (definitionsOut != nullptr) {
+        *definitionsOut = std::move(parsedDefinitions);
     }
     return 1;
 }

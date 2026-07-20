@@ -81,14 +81,18 @@ bool StaticSolidMaterialAssetLinker::ResolveAndAppend(
     const CGameCtnReplayStaticSolidExternalNodeRef externalRef =
             archiveNodeGraph->ExternalNodeRef(materialNode);
     if (CGameCtnReplayStaticSolidExternalNodePathResolver::BuildPlainPath(
-                externalFolders, externalRef, 0, &path)) {
+                externalFolders,
+                store->ExternalPack(),
+                externalRef,
+                0,
+                &path)) {
         resolved = assets->ResolveMaterialPath(path.PlainPath());
     }
     if (!resolved) {
         resolved = assets->ResolveMaterial(reference.Identifier());
     }
     if (!resolved) {
-        return true;
+        return false;
     }
 
     CGameCtnReplayStaticSolidArchiveMaterialDefinition definition;

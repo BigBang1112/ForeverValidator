@@ -1,11 +1,12 @@
 #include "simulation/runtime/replay_vehicle_collision_model.h"
+#include <new>
 #include <utility>
+#include <vector>
 
 #include "engine/physics/geometry/gm_surface.h"
 #include "engine/rendering/plug_material.h"
 #include "engine/physics/geometry/plug_surface.h"
 #include "engine/rendering/plug_tree.h"
-#include <new>
 namespace {
 
 CPlugTree::SFlags VehicleCollisionTreeState(bool visible) {
@@ -34,10 +35,28 @@ std::unique_ptr<CPlugTree> BuildShapeTree(
 
     CMwNodRef<CPlugSurface> surface = MakeMwNod<CPlugSurface>();
     CMwNodRef<CPlugSurfaceGeom> geometry = MakeMwNod<CPlugSurfaceGeom>();
-    auto ellipsoid = std::make_unique<GmSurfEllipsoid>();
-    ellipsoid->material = definition.localMaterial;
-    ellipsoid->radii = definition.localBounds.halfExtents;
-    geometry->SetGmSurf(std::move(ellipsoid));
+    std::unique_ptr<GmSurf> collisionSurface;
+    if (definition.surfaceType ==
+        static_cast<std::uint32_t>(GmSurf::EGmSurfType::Sphere)) {
+        auto sphere = std::make_unique<GmSurfSphere>();
+        sphere->radius = definition.localBounds.halfExtents.y;
+        collisionSurface = std::move(sphere);
+    } else if (definition.surfaceType ==
+               static_cast<std::uint32_t>(GmSurf::EGmSurfType::Ellipsoid)) {
+        auto ellipsoid = std::make_unique<GmSurfEllipsoid>();
+        ellipsoid->radii = definition.localBounds.halfExtents;
+        collisionSurface = std::move(ellipsoid);
+    } else if (definition.surfaceType ==
+               static_cast<std::uint32_t>(GmSurf::EGmSurfType::Box)) {
+        auto box = std::make_unique<GmSurfBox>();
+        box->center = definition.localBounds.center;
+        box->halfExtents = definition.localBounds.halfExtents;
+        collisionSurface = std::move(box);
+    } else {
+        return nullptr;
+    }
+    collisionSurface->material = GmLocalMaterialIndex::FromIndex(0u);
+    geometry->SetGmSurf(std::move(collisionSurface));
 
     CMwNodRef<CPlugMaterial> material = MakeMwNod<CPlugMaterial>();
     material->SetSurfaceMaterialId(definition.surfaceMaterial);
@@ -62,18 +81,31 @@ bool ReplayVehicleCollisionModel::Build(
         auto root = std::make_unique<CPlugTree>();
         root->ApplyLoadedState(VehicleCollisionTreeState(true));
         root->SetLocation(IdentityIso());
-        for (VehicleCollisionRole role :
-             VehicleCollisionRolesInDetectorOrder) {
-            const VehicleCollisionShapeDefinition *shapeDefinition =
-                    definition.Shape(role);
-            if (shapeDefinition == nullptr) {
+        const std::vector<VehicleCollisionShapeEntry> &entries =
+                definition.ShapesInArchiveOrder();
+        std::vector<CPlugTree *> builtShapes(entries.size(), nullptr);
+        for (std::size_t index = 0u; index < entries.size(); index++) {
+            const VehicleCollisionShapeEntry &entry = entries[index];
+            std::unique_ptr<CPlugTree> shape =
+                    BuildShapeTree(entry.shape);
+            if (shape == nullptr) {
                 return false;
             }
-            std::unique_ptr<CPlugTree> shape =
-                    BuildShapeTree(*shapeDefinition);
             CPlugTree *shapePtr = shape.get();
-            root->AddOwnedChild(std::move(shape));
-            shapes[VehicleCollisionRoleIndex(role)] = shapePtr;
+            if (entry.parentShapeIndex.has_value()) {
+                const std::size_t parentIndex = *entry.parentShapeIndex;
+                if (parentIndex >= index ||
+                    builtShapes[parentIndex] == nullptr) {
+                    return false;
+                }
+                builtShapes[parentIndex]->AddOwnedChild(std::move(shape));
+            } else {
+                root->AddOwnedChild(std::move(shape));
+            }
+            builtShapes[index] = shapePtr;
+            if (entry.wheelRole.has_value()) {
+                shapes[VehicleCollisionRoleIndex(*entry.wheelRole)] = shapePtr;
+            }
         }
         root->UpdateBoundingBox(0u);
         tree = std::move(root);

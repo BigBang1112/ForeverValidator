@@ -12,6 +12,7 @@ void ReplayMapScene::Reset(CTrackManiaRace &race) {
     race.ResetValidationSession();
     persistentCollisionZone_.Reset();
     staticCorpuses_.Clear();
+    dedicatedCollisionCorpuses_.Clear();
     models_.Clear();
     blockPlacements_.Clear();
     challenge_.reset();
@@ -23,25 +24,33 @@ void ReplayMapScene::Reset(CTrackManiaRace &race) {
 
 ReplayMapSceneResult ReplayMapScene::PreloadChallenge(
         CGameCtnChallengeConstruction &construction) {
-    if (!construction.Ready()) {
-        challenge_.reset();
-        blockPlacements_.Clear();
+    persistentCollisionZone_.Reset();
+    staticCorpuses_.Clear();
+    dedicatedCollisionCorpuses_.Clear();
+    models_.Clear();
+    blockPlacements_.Clear();
+    challenge_.reset();
+    active_ = false;
+    ready_ = false;
+    collisionZoneConstructed_ = false;
+    stationaryCorpusesInstalled_ = false;
+
+    if (!construction.Ready() ||
+        !construction.HasPreparedBlockPlacements()) {
         return ReplayMapSceneResult::ChallengeUnavailable;
     }
 
-    challenge_ = construction.ReleaseChallenge();
-    if (challenge_ == nullptr) {
-        blockPlacements_.Clear();
+    if (!construction.MovePreparedSceneTo(
+                challenge_, blockPlacements_)) {
         return ReplayMapSceneResult::ChallengeUnavailable;
     }
-    staticCorpuses_.Clear();
-    blockPlacements_.PopulateFromChallenge(*challenge_);
     return ReplayMapSceneResult::Ready;
 }
 
 ReplayMapSceneResult ReplayMapScene::InstallModels(
         StaticSceneModelCollection models) {
     staticCorpuses_.Clear();
+    dedicatedCollisionCorpuses_.Clear();
     try {
         models_ = std::move(models);
     } catch (const std::bad_alloc &) {
@@ -59,13 +68,19 @@ void ReplayMapScene::Activate() {
 
 ReplayMapSceneResult ReplayMapScene::BuildStaticCorpuses() {
     staticCorpuses_.Clear();
-    if (!staticCorpuses_.BuildFromModels(models_)) {
+    dedicatedCollisionCorpuses_.Clear();
+    if (!staticCorpuses_.BuildFromModels(
+                models_,
+                ReplayStaticCorpusModelSelection::
+                        ExcludeDedicatedInitialCollision) ||
+        !dedicatedCollisionCorpuses_.BuildFromModels(models_)) {
         return ReplayMapSceneResult::StaticCorpusConstructionFailed;
     }
     if (!models_.IsComplete()) {
         return ReplayMapSceneResult::MissingModelSources;
     }
-    if (staticCorpuses_.Count() != models_.Models().size()) {
+    if (staticCorpuses_.Count() + dedicatedCollisionCorpuses_.Count() !=
+        models_.Models().size()) {
         return ReplayMapSceneResult::CorpusCountMismatch;
     }
     return ReplayMapSceneResult::Ready;
@@ -98,7 +113,9 @@ ReplayMapSceneResult ReplayMapScene::InstallStationaryCorpuses(
     race.BindCheckpointCourse(&staticCorpuses_);
     race.BindVehicle(vehicle);
     race.PrepareCheckpoints();
-    return staticCorpuses_.InstallIntoZone(
+    return InstallReplaySceneCollisionCorpuses(
+                   staticCorpuses_,
+                   dedicatedCollisionCorpuses_,
                    persistentCollisionZone_)
                    ? ReplayMapSceneResult::Ready
                    : ReplayMapSceneResult::StationaryCorpusInstallFailed;
@@ -135,8 +152,11 @@ ReplayMapSceneResult ReplayMapScene::SelectCollisionZone(
 }
 
 bool ReplayMapScene::FirstStartLineSpawnLocation(GmIso4 &location) const {
-    const std::optional<GmIso4> spawn =
-            blockPlacements_.FirstStartLineSpawn();
+    std::optional<GmIso4> spawn =
+            blockPlacements_.FirstSurvivingStartLineSpawn();
+    if (!spawn.has_value()) {
+        spawn = blockPlacements_.FirstRetainedLogicalStartLineSpawn();
+    }
     if (!spawn.has_value()) {
         return false;
     }

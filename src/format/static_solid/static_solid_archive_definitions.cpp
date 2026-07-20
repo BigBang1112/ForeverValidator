@@ -90,6 +90,7 @@ void CGameCtnReplayStaticSolidArchiveMaterialDefinition::InstallResolved(
     this->material = material;
     asset = definition.material.asset;
     surface = definition.material.surface;
+    render = definition.material.render;
     remaps = definition.remaps;
 }
 
@@ -112,6 +113,7 @@ void CGameCtnReplayStaticSolidArchiveMaterialDefinition::ApplyToMaterial(
         CPlugMaterial *material) const {
     if (material != nullptr) {
         surface.ApplyTo(*material);
+        material->SetReplayRenderDefinition(render);
     }
 }
 
@@ -123,6 +125,11 @@ CGameCtnReplayStaticSolidArchiveMaterialDefinition::Asset() const {
 const MaterialSurfaceDefinition &
 CGameCtnReplayStaticSolidArchiveMaterialDefinition::Surface() const {
     return surface;
+}
+
+const MaterialRenderDefinition &
+CGameCtnReplayStaticSolidArchiveMaterialDefinition::Render() const {
+    return render;
 }
 
 const MaterialRemapCollection &

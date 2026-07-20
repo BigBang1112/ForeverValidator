@@ -100,6 +100,9 @@ int CGameCtnReplayStaticSolidArchiveRootReader::ParseRefSection(
         if (!byteStream->ReadU32(&nodeIndex)) {
             return 0;
         }
+        if (nodeIndex > numNodes) {
+            return 0;
+        }
         if (version >= 5u &&
             !byteStream->ReadU32(&loadable)) {
             return 0;

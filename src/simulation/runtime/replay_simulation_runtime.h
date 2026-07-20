@@ -7,6 +7,8 @@
 #include "simulation/control/replay_control_timeline.h"
 #include "simulation/runtime/replay_dyna_frame_state.h"
 #include "simulation/runtime/replay_simulation_result.h"
+#include "engine/game/trackmania_race.h"
+#include "engine/scene/scene_vehicle_car.h"
 class CTrackManiaRace;
 class ReplayMapScene;
 struct ReplaySimulationDefinition;
@@ -18,6 +20,11 @@ struct ReplaySimulationStepExecution {
     std::optional<std::uint32_t> finishTickMs;
     std::uint32_t respawnExecutedCount = 0u;
 };
+
+ReplayStuntSimulationState BuildReplayStuntSimulationState(
+        const ReplaySimulationStepExecution &execution,
+        const CSceneVehicleCar::SVehicleCarState &physics,
+        const ReplayControlTick &tick);
 
 class ReplaySimulationRuntime {
 public:
@@ -36,6 +43,9 @@ public:
     ReplaySimulationStepExecution Step(
             const ReplayControlTick &tick);
     std::optional<std::uint32_t> FinishTimeMs() const;
+    std::optional<std::uint32_t> StuntsScore() const;
+    std::optional<std::uint32_t> ApplyReplayStuntTimePenalty(
+            std::uint32_t overtimeMs);
 
 private:
     struct State;

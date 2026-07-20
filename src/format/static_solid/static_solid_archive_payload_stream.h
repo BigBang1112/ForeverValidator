@@ -16,6 +16,12 @@ public:
             CGameCtnReplayStaticSolidDecodedPayload *decodedOut,
             CGameCtnReplayStaticSolidArchiveDecodeStats *statsOut);
 
+    static int DecodeReferenceTablePrefixWithStreamFeedback(
+            const SNat128 &key,
+            const StaticSolidArchivePayload &payloadAsset,
+            StaticSolidArchiveRawBytes rawPayload,
+            CGameCtnReplayStaticSolidDecodedPayload *decodedOut);
+
     static int EnqueueExternalRefDependencies(
             const StaticSolidArchivePayload &payloadAsset,
             const unsigned char *decodedBytes,

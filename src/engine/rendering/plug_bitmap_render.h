@@ -44,6 +44,8 @@ public:
     CPlugBitmapRender(void);
     ~CPlugBitmapRender(void) override;
     virtual void CleanRenderCache(void);
+    virtual unsigned long GetMwClassId(void) const;
+    virtual int MwIsKindOf(unsigned long classId) const;
 
 private:
     unsigned long sampleCount_ = 1ul;
@@ -54,10 +56,20 @@ private:
     SPlugVisibleFilter secondaryFilter_;
 };
 
-class CPlugBitmapRenderScene3d : public CPlugBitmapRender {
+class CPlugBitmapRenderCamera : public CPlugBitmapRender {
+public:
+    CPlugBitmapRenderCamera(void);
+    ~CPlugBitmapRenderCamera(void) override;
+    unsigned long GetMwClassId(void) const override;
+    int MwIsKindOf(unsigned long classId) const override;
+};
+
+class CPlugBitmapRenderScene3d : public CPlugBitmapRenderCamera {
 public:
     CPlugBitmapRenderScene3d(void);
     ~CPlugBitmapRenderScene3d(void) override;
+    unsigned long GetMwClassId(void) const override;
+    int MwIsKindOf(unsigned long classId) const override;
     CSystemFid *SourceFid(void) const;
     void SetSource(CMwNod *source);
 
@@ -69,6 +81,8 @@ class CPlugBitmapRenderWater : public CPlugBitmapRender {
 public:
     CPlugBitmapRenderWater(void);
     ~CPlugBitmapRenderWater(void) override;
+    unsigned long GetMwClassId(void) const override;
+    int MwIsKindOf(unsigned long classId) const override;
 
 private:
     GmIso4 cameraTransform_{};
@@ -86,6 +100,8 @@ class CPlugBitmapRenderCubeMap : public CPlugBitmapRender {
 public:
     CPlugBitmapRenderCubeMap(void);
     ~CPlugBitmapRenderCubeMap(void) override;
+    unsigned long GetMwClassId(void) const override;
+    int MwIsKindOf(unsigned long classId) const override;
     void CleanRenderCache(void) override;
     bool HasCachedCaptureBounds(void) const;
 

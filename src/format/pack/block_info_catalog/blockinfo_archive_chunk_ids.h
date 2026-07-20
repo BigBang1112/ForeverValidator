@@ -44,6 +44,7 @@ constexpr int IsCGameCtnBlockInfoArchiveClass(u32 classId) {
            classId == TMNF_CLASS_CGameCtnBlockInfoClassic ||
            classId == TMNF_CLASS_CGameCtnBlockInfoRoad ||
            classId == TMNF_CLASS_CGameCtnBlockInfoClip ||
+           classId == TMNF_CLASS_CGameCtnBlockInfoSlope ||
            classId == TMNF_CLASS_CGameCtnBlockInfoPylon ||
            classId == TMNF_CLASS_CGameCtnBlockInfoRectAsym ||
            classId == TMNF_CLASS_CGameCtnBlock;

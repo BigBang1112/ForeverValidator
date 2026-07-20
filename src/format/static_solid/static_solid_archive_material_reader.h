@@ -8,6 +8,7 @@
 #include "format/static_solid/static_solid_archive_node_ref_reader.h"
 #include "format/static_solid/static_solid_archive_id.h"
 struct CGameCtnReplayStaticSolidArchiveByteStream;
+struct CGameCtnReplayStaticSolidArchiveCMwIdState;
 struct StaticSolidArchiveLoadSession;
 
 struct CPlugMaterialDiscardedRefArchivePayload {
@@ -18,10 +19,12 @@ struct CPlugMaterialDeviceMatsArchivePayload {
     explicit CPlugMaterialDeviceMatsArchivePayload(u32 chunkId);
 
     int Read(CGameCtnReplayStaticSolidArchiveByteStream *byteStream,
+             CGameCtnReplayStaticSolidArchiveCMwIdState *cmwIdState,
              CGameCtnReplayStaticSolidArchiveNodeRefReader *nodeRefs);
 
 private:
     int ReadDeviceMats(CGameCtnReplayStaticSolidArchiveByteStream *byteStream,
+                       CGameCtnReplayStaticSolidArchiveCMwIdState *cmwIdState,
                        CGameCtnReplayStaticSolidArchiveNodeRefReader *nodeRefs);
 
     u32 chunkId_;
@@ -44,6 +47,8 @@ private:
 struct CGameCtnReplayStaticSolidArchiveMaterialReader {
     static int ParseCPlugMaterialChunk(
             CGameCtnReplayStaticSolidArchiveByteStream *byteStream,
+            CGameCtnReplayStaticSolidArchiveCMwIdState *cmwIdState,
+            u32 classId,
             StaticSolidArchiveLoadSession *store,
             StaticSolidArchiveId payload,
             u32 materialNodeIndex,

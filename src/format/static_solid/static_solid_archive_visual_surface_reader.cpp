@@ -26,7 +26,8 @@ public:
   explicit CGameCtnReplayStaticSolidVisualSurfaceParser(
       const CGameCtnReplayStaticSolidArchiveChunkDispatchContext &context);
 
-  int Read(CGameCtnReplayStaticSolidArchiveByteStream *byteStream, u32 chunkId);
+  int Read(CGameCtnReplayStaticSolidArchiveByteStream *byteStream, u32 classId,
+           u32 chunkId);
 
 private:
   int ReadCountedByteRecords(
@@ -148,7 +149,8 @@ int CGameCtnReplayStaticSolidVisualSurfaceParser::ReadVisualSurfaceBase(
 }
 
 int CGameCtnReplayStaticSolidVisualSurfaceParser::Read(
-    CGameCtnReplayStaticSolidArchiveByteStream *byteStream, u32 chunkId) {
+    CGameCtnReplayStaticSolidArchiveByteStream *byteStream, u32 classId,
+    u32 chunkId) {
   if (byteStream == nullptr || context_.cmwIdState == nullptr ||
       context_.nodeRefs == nullptr) {
     return 0;
@@ -190,11 +192,16 @@ int CGameCtnReplayStaticSolidVisualSurfaceParser::Read(
         context_.nodeRefs);
   case ArchiveChunkIdValue(CPlugVisual3DArchiveChunkId::FaceStream):
     return StaticSolidArchiveVisualReader::ParseVisual3dFaceStream(
-        byteStream, context_.visualProviderState, context_.materialStore);
+        byteStream, context_.visualProviderState, context_.materialStore,
+        classId);
   case ArchiveChunkIdValue(CPlugVisualIndexedArchiveChunkId::IndexBuffer):
     return StaticSolidArchiveVisualReader::ParseVisualIndexBuffer(
         byteStream, context_.feedback, context_.decodeProgress,
         context_.materialStore, context_.visualProviderState);
+  case ArchiveChunkIdValue(CPlugVisualSpriteArchiveChunkId::SpriteParameters):
+    return byteStream->Skip(24u);
+  case ArchiveChunkIdValue(CPlugVisualSpriteArchiveChunkId::AtlasGrid):
+    return byteStream->Skip(4u);
   default:
     return 0;
   }
@@ -239,6 +246,13 @@ int CGameCtnReplayStaticSolidIndexBufferParser::Read(
 
 } // namespace
 
+int CPlugVisualGridArchivePayload::Chunk(
+    CGameCtnReplayStaticSolidArchiveByteStream *byteStream, u32 chunkId) {
+  return byteStream != nullptr && IsCPlugVisualGridInfo3Chunk(chunkId) &&
+         byteStream->ReadU32(&nbPointX) && byteStream->ReadU32(&nbPointZ) &&
+         byteStream->ReadF32(&rangeX) && byteStream->ReadF32(&rangeZ);
+}
+
 int CGameCtnReplayStaticSolidArchiveVisualSurfaceReader::
     ParseVisualSurfaceChunk(
         const CGameCtnReplayStaticSolidArchiveChunkDispatchContext &context,
@@ -248,9 +262,16 @@ int CGameCtnReplayStaticSolidArchiveVisualSurfaceReader::
     GxLightArchiveParser lightParser;
     return lightParser.Read(context.byteStream, classId, chunkId);
   }
-  if (classId == TMNF_CLASS_CPlugVisualIndexedTriangles) {
+  if (classId == TMNF_CLASS_CPlugVisualGrid &&
+      IsCPlugVisualGridInfo3Chunk(chunkId)) {
+    CPlugVisualGridArchivePayload grid;
+    return grid.Chunk(context.byteStream, chunkId);
+  }
+  if (classId == TMNF_CLASS_CPlugVisualIndexedTriangles ||
+      classId == TMNF_CLASS_CPlugVisualSprite ||
+      classId == TMNF_CLASS_CPlugVisualGrid) {
     CGameCtnReplayStaticSolidVisualSurfaceParser visualParser(context);
-    return visualParser.Read(context.byteStream, chunkId);
+    return visualParser.Read(context.byteStream, classId, chunkId);
   }
   if (classId == TMNF_CLASS_CPlugSurface &&
       chunkId == TMNF_CLASS_CPlugSurface) {

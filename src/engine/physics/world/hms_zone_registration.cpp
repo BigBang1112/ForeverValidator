@@ -125,6 +125,7 @@ void CHmsZone::AddCorpus(CHmsCorpus *corpus) {
     const EHmsCorpusCat corpusCat = item->GetCorpusCat();
     corpusesByCategory_.Add(*corpus, corpusCat);
     corpus->zone_ = this;
+    Zone_UpdateWaterHeights(corpus);
 
     if (item->HasPortals()) {
         CorpusChangeBuild(corpus, 1);

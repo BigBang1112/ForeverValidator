@@ -43,27 +43,29 @@ void CSceneVehicleCar::IntegrateLegacyEngine(CSceneVehicleCarTuning *tuning,
 
   int groundReady = (!(blocked) && !(0.0f < engine.shiftCooldown));
   const int storedGear = engine.gearIndex;
-  int gear = storedGear < 2 ? 0 : storedGear - 1;
+  int ratioIndex = storedGear < 2 ? 0 : storedGear - 1;
 
   float speed = TransmissionWeightedSpeed();
   float targetInput =
       (speed / (tuning->engineSpeedNorm * LegacyEngineSpeedNormScale)) *
-      tuning->GearRatio(gear);
+      tuning->GearRatio(ratioIndex);
 
   if (groundReady) {
     input = targetInput;
     if (!engine.useLowSpeedGateB) {
-      if (gear == 0) {
+      if (storedGear == 0) {
         engine.gearIndex = 1;
         engine.shiftCooldown = LegacyEngineGearChangeCooldown;
-      } else if (tuning->UpshiftThreshold(gear) < targetInput && gear < 5) {
-        engine.gearIndex = gear + 1;
+      } else if (tuning->UpshiftThreshold(ratioIndex) < targetInput &&
+                 storedGear < 5) {
+        engine.gearIndex = storedGear + 1;
         engine.shiftCooldown = LegacyEngineGearChangeCooldown;
-      } else if (targetInput < tuning->DownshiftThreshold(gear) && gear > 1) {
-        engine.gearIndex = gear - 1;
+      } else if (targetInput < tuning->DownshiftThreshold(ratioIndex) &&
+                 storedGear > 1) {
+        engine.gearIndex = storedGear - 1;
         engine.shiftCooldown = LegacyEngineGearChangeCooldown;
       }
-    } else if (gear != 0) {
+    } else if (storedGear != 0) {
       engine.gearIndex = 0;
       engine.shiftCooldown = LegacyEngineGearChangeCooldown;
     }
@@ -211,9 +213,8 @@ void CSceneVehicleCar::IntegrateGearedEngine(CSceneVehicleCarTuning *tuning,
       gearedDrive.burnoutPhase == CSceneVehicleCarBurnoutPhase_CircularDrift;
   if (burnoutState && engine.gearIndex != 0) {
     gearedDrive.engineState = CSceneVehicleCarEngineControlState_BurnoutHold;
-  } else if (!burnoutState &&
-             gearedDrive.engineState ==
-                 CSceneVehicleCarEngineControlState_BurnoutHold) {
+  } else if (gearedDrive.engineState ==
+             CSceneVehicleCarEngineControlState_BurnoutHold) {
     gearedDrive.engineState = CSceneVehicleCarEngineControlState_Steady;
   }
 

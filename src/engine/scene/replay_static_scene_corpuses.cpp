@@ -51,11 +51,13 @@ ReplayStaticCorpus::~ReplayStaticCorpus() {
 }
 
 bool ReplayStaticCorpus::Configure(
-        const StaticSceneModel &model) {
+        const StaticSceneModel &model,
+        u32 installationOrder) {
     if (!body_.ConstructStaticMobil(model.Prototype(), model.WorldIso())) {
         return false;
     }
     purpose = model.Purpose();
+    installationOrder_ = installationOrder;
     if (model.ItemProperties().has_value()) {
         body_.Item().SetProperties(*model.ItemProperties());
         if (purpose == StaticScenePurpose::CheckpointTrigger) {
@@ -81,6 +83,22 @@ void ReplayStaticCorpus::DetachFromWorld() {
 
 bool ReplayStaticCorpus::IsRaceTriggerMobil() const {
     return purpose == StaticScenePurpose::CheckpointTrigger;
+}
+
+u32 ReplayStaticCorpus::InstallationOrder() const {
+    return installationOrder_;
+}
+
+StaticScenePurpose ReplayStaticCorpus::Purpose() const {
+    return purpose;
+}
+
+const CHmsItem &ReplayStaticCorpus::Item() const {
+    return body_.Item();
+}
+
+const CHmsCorpus &ReplayStaticCorpus::Corpus() const {
+    return body_.Corpus();
 }
 
 u32 ReplayStaticCorpus::InstallRaceTriggerHook(
@@ -115,6 +133,16 @@ u32 ReplayStaticCorpus::RaceBlockIdForCheckpointBlock(
             : 0u;
 }
 
+bool ReplayStaticCorpus::IsCheckpoint() const {
+    return checkpointIdentity.has_value() &&
+           checkpointIdentity->raceRole == BlockRaceRole::Checkpoint;
+}
+
+bool ReplayStaticCorpus::OwnsCheckpointBlock(
+        const CGameCtnBlock *block) const {
+    return IsCheckpoint() && checkpointTrigger.OwnsBlock(block);
+}
+
 bool ReplayStaticCorpus::OwnsTreeInAncestry(
         const CPlugTree *tree) const {
     return body_.OwnsTreeInAncestry(tree);
@@ -125,14 +153,28 @@ void ReplayStaticCorpusCollection::Clear() {
 }
 
 bool ReplayStaticCorpusCollection::BuildFromModels(
-        const StaticSceneModelCollection &models) {
+        const StaticSceneModelCollection &models,
+        ReplayStaticCorpusModelSelection selection) {
     Clear();
     try {
         corpuses.reserve(models.Models().size());
-        for (const StaticSceneModel &model : models.Models()) {
+        for (u32 modelIndex = 0u;
+             modelIndex < models.Models().size();
+             ++modelIndex) {
+            const StaticSceneModel &model = models.Models()[modelIndex];
+            const bool dedicated = model.Purpose() ==
+                    StaticScenePurpose::DedicatedInitialCollision;
+            if ((selection == ReplayStaticCorpusModelSelection::
+                                      ExcludeDedicatedInitialCollision &&
+                 dedicated) ||
+                (selection == ReplayStaticCorpusModelSelection::
+                                      DedicatedInitialCollisionOnly &&
+                 !dedicated)) {
+                continue;
+            }
             auto corpus =
                     std::make_unique<ReplayStaticCorpus>();
-            if (!corpus->Configure(model)) {
+            if (!corpus->Configure(model, modelIndex)) {
                 Clear();
                 return false;
             }
@@ -183,6 +225,30 @@ u32 ReplayStaticCorpusCollection::RaceBlockIdForCheckpointBlock(
     return 0u;
 }
 
+u32 ReplayStaticCorpusCollection::CheckpointCount() const {
+    u32 count = 0u;
+    for (const std::unique_ptr<ReplayStaticCorpus> &corpus : corpuses) {
+        count += corpus->IsCheckpoint() ? 1u : 0u;
+    }
+    return count;
+}
+
+std::optional<u32>
+ReplayStaticCorpusCollection::CheckpointSlotForBlock(
+        const CGameCtnBlock *block) const {
+    u32 slot = 0u;
+    for (const std::unique_ptr<ReplayStaticCorpus> &corpus : corpuses) {
+        if (!corpus->IsCheckpoint()) {
+            continue;
+        }
+        if (corpus->OwnsCheckpointBlock(block)) {
+            return slot;
+        }
+        ++slot;
+    }
+    return std::nullopt;
+}
+
 u32 ReplayStaticCorpusCollection::InstallRaceTriggerHooks(
         ReplayCheckpointContactObserver &observer) {
     u32 installed = 0u;
@@ -191,4 +257,66 @@ u32 ReplayStaticCorpusCollection::InstallRaceTriggerHooks(
         installed += corpus->InstallRaceTriggerHook(observer);
     }
     return installed;
+}
+
+ReplayStaticCorpus *ReplayStaticCorpusCollection::CorpusAt(u32 index) {
+    return index < corpuses.size() ? corpuses[index].get() : nullptr;
+}
+
+const ReplayStaticCorpus *ReplayStaticCorpusCollection::CorpusAt(
+        u32 index) const {
+    return index < corpuses.size() ? corpuses[index].get() : nullptr;
+}
+
+void ReplayDedicatedCollisionCorpusCollection::Clear() {
+    corpuses_.Clear();
+}
+
+bool ReplayDedicatedCollisionCorpusCollection::BuildFromModels(
+        const StaticSceneModelCollection &models) {
+    return corpuses_.BuildFromModels(
+            models,
+            ReplayStaticCorpusModelSelection::
+                    DedicatedInitialCollisionOnly);
+}
+
+u32 ReplayDedicatedCollisionCorpusCollection::Count() const {
+    return corpuses_.Count();
+}
+
+ReplayStaticCorpus *ReplayDedicatedCollisionCorpusCollection::CorpusAt(
+        u32 index) {
+    return corpuses_.CorpusAt(index);
+}
+
+const ReplayStaticCorpus *
+ReplayDedicatedCollisionCorpusCollection::CorpusAt(u32 index) const {
+    return corpuses_.CorpusAt(index);
+}
+
+bool InstallReplaySceneCollisionCorpuses(
+        ReplayStaticCorpusCollection &staticCorpuses,
+        ReplayDedicatedCollisionCorpusCollection &dedicatedCorpuses,
+        CHmsCollisionManager::SZone &zone) {
+    u32 staticIndex = 0u;
+    u32 dedicatedIndex = 0u;
+    while (staticIndex < staticCorpuses.Count() ||
+           dedicatedIndex < dedicatedCorpuses.Count()) {
+        ReplayStaticCorpus *stationary =
+                staticCorpuses.CorpusAt(staticIndex);
+        ReplayStaticCorpus *dedicated =
+                dedicatedCorpuses.CorpusAt(dedicatedIndex);
+        if (dedicated == nullptr ||
+            (stationary != nullptr &&
+             stationary->InstallationOrder() <
+                     dedicated->InstallationOrder())) {
+            stationary->InstallIntoZone(zone);
+            ++staticIndex;
+        } else {
+            dedicated->InstallIntoZone(zone);
+            ++dedicatedIndex;
+        }
+    }
+    zone.UpdateStaticCollisionTrees();
+    return true;
 }

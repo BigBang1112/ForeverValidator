@@ -17,9 +17,12 @@ class ReplaySimulationSession;
 class ReplayValidationReplay {
 public:
     ReplayValidationReplay(const ReplayInputTimeline &inputTimeline,
-                           const ReplayGhostTrajectory &ghostTrajectory)
+                           const ReplayGhostTrajectory &ghostTrajectory,
+                           std::optional<std::uint32_t> stuntsTimeLimitMs =
+                                   std::nullopt)
         : inputTimeline_(inputTimeline),
-          ghostTrajectory_(ghostTrajectory) {}
+          ghostTrajectory_(ghostTrajectory),
+          stuntsTimeLimitMs_(stuntsTimeLimitMs) {}
 
     ReplayValidationReplay(const ReplayValidationReplay &) = delete;
     ReplayValidationReplay &operator=(const ReplayValidationReplay &) = delete;
@@ -35,18 +38,21 @@ public:
     }
 
     std::optional<std::int32_t> ExpectedRaceTimeMs() const;
+    std::optional<std::int32_t> ExpectedStuntsScore() const;
     std::optional<std::int32_t> ExpectedRespawns() const;
     std::size_t ExpectedSamples() const;
     std::uint32_t RequestedSamples(
             const ReplayValidationConfiguration &configuration) const;
     ReplayValidationPlan BuildStreamPlan(
-            const ReplayValidationConfiguration &configuration) const;
+            const ReplayValidationConfiguration &configuration,
+            ReplayValidationMode validationMode) const;
     ReplayValidationMetadata BuildMetadata(
             const ReplayValidationConfiguration &configuration) const;
 
 private:
     const ReplayInputTimeline &inputTimeline_;
     const ReplayGhostTrajectory &ghostTrajectory_;
+    std::optional<std::uint32_t> stuntsTimeLimitMs_;
 
     static std::size_t ExpectedSampleCount(
             const ReplayGhostTrajectory &trajectory,
@@ -92,8 +98,17 @@ using ReplayFileValidationBuild =
                 ReplayFileValidationResult,
                 ReplayValidationExecutionResult>;
 
+std::optional<ReplayFileValidationResult> ClassifyReplayCompatibility(
+        const ReplayFile &replay,
+        const ReplayValidationConfiguration &configuration);
+
+std::optional<ReplayFileValidationResult> ClassifyReplayInputAvailability(
+        const ReplayFile &replay,
+        const ReplayValidationConfiguration &configuration);
+
 ReplayFileValidationBuild ValidateReplayFile(
         const ReplayFile &replay,
+        ReplayValidationMode validationMode,
         ReplaySimulationSession &simulationSession,
         const ReplaySimulationDefinition &simulationDefinition,
         const ReplayValidationConfiguration &configuration);

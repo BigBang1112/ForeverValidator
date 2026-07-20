@@ -1,13 +1,33 @@
 #include "engine/rendering/plug_material.h"
 #include <algorithm>
+#include <new>
 #include <optional>
+#include <type_traits>
+#include "engine/rendering/plug_bitmap.h"
 #include "engine/rendering/plug_material_custom_parameters.h"
 #include "engine/rendering/plug_tree.h"
 #include "engine/rendering/plug_visual.h"
 #include "engine/resources/system_fid.h"
 #include "engine/resources/system_fid_parameters.h"
+#include "format/archive/archive_class_ids.h"
 namespace {
 constexpr u32 CPlugMaterialShaderRefCount = 2u;
+
+CMwNodRef<CPlugBitmapRender> CreateReplayBitmapRender(u32 classId) {
+    if (classId == TMNF_CLASS_CPlugBitmapRenderWater) {
+        return CMwNodRef<CPlugBitmapRender>(new CPlugBitmapRenderWater());
+    }
+    if (classId == TMNF_CLASS_CPlugBitmapRenderCubeMap) {
+        return CMwNodRef<CPlugBitmapRender>(new CPlugBitmapRenderCubeMap());
+    }
+    if (classId == TMNF_CLASS_CPlugBitmapRenderScene3d) {
+        return CMwNodRef<CPlugBitmapRender>(new CPlugBitmapRenderScene3d());
+    }
+    if (classId == TMNF_CLASS_CPlugBitmapRender) {
+        return MakeMwNod<CPlugBitmapRender>();
+    }
+    return {};
+}
 }
 
 UPlugRenderDevice CPlugMaterial::s_SupportedDevice{
@@ -55,6 +75,73 @@ CPlugMaterial::~CPlugMaterial(void) {
     ShaderRemoveAll();
     SetMaterialCustom(nullptr);
     materialModel.MwSetNod(nullptr);
+}
+
+void CPlugMaterial::SetReplayRenderDefinition(
+        const MaterialRenderDefinition &definition) {
+    try {
+        MaterialRenderDefinition nextDefinition = definition;
+        std::vector<SDeviceMat> nextDeviceMaterials;
+        if (definition.Bitmaps().empty()) {
+            static_assert(std::is_nothrow_move_assignable_v<
+                          MaterialRenderDefinition>);
+            replayRenderDefinition_ = std::move(nextDefinition);
+            deviceMaterials.swap(nextDeviceMaterials);
+            return;
+        }
+
+        const u32 key = definition.ShaderRenderDeviceWord();
+        const u32 device = (key >> 16u) & 0xffffu;
+        const u32 subDevice = (key >> 8u) & 0xffu;
+        const u32 quality = key & 0xffu;
+        if (device > PlugRenderDevice_PC3 ||
+            quality > PlugRenderQuality_VHigh) {
+            return;
+        }
+
+        CMwNodRef<CPlugShaderApply> shader =
+                MakeMwNod<CPlugShaderApply>();
+        shader->SetArchiveFlags(definition.ShaderFlags());
+        for (const MaterialRenderBitmapDefinition &bitmapDefinition :
+             definition.Bitmaps()) {
+            CMwNodRef<CPlugBitmapRender> render =
+                    CreateReplayBitmapRender(bitmapDefinition.renderClassId);
+            if (!render) {
+                if (bitmapDefinition.renderClassId == 0u) {
+                    continue;
+                }
+                return;
+            }
+            CMwNodRef<CPlugBitmap> bitmap = MakeMwNod<CPlugBitmap>();
+            bitmap->SetPixelUpdate(CPlugBitmap::PixelUpdate_Render,
+                                   render.Get());
+            CMwNodRef<CPlugBitmapAddress> address =
+                    MakeMwNod<CPlugBitmapAddress>();
+            address->CreateBitmapAddress(shader.Get(), bitmap.Get(), 0ul);
+            CMwNodRef<CPlugShaderPass> pass =
+                    MakeMwNod<CPlugShaderPass>();
+            pass->AddBitmapAddress(address.Get());
+            shader->AddPass(pass.Get());
+        }
+        if (shader->GetPassToRenderCount() != 0ul) {
+            nextDeviceMaterials.emplace_back();
+            SDeviceMat &selected = nextDeviceMaterials.back();
+            selected.renderDevice = {
+                    static_cast<EPlugRenderDevice>(device),
+                    subDevice,
+                    static_cast<EPlugRenderQuality>(quality)};
+            selected.SetActiveShader(shader.Get());
+        }
+        replayRenderDefinition_ = std::move(nextDefinition);
+        deviceMaterials.swap(nextDeviceMaterials);
+    } catch (const std::bad_alloc &) {
+        return;
+    }
+}
+
+const MaterialRenderDefinition &
+CPlugMaterial::ReplayRenderDefinition(void) const {
+    return replayRenderDefinition_;
 }
 
 CMwNod *CPlugMaterial::MwNewCPlugMaterial(void) {

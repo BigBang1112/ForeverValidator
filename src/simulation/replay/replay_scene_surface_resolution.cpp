@@ -90,10 +90,18 @@ const char *SurfaceName(const CGameCtnBlockUnitInfo *unit) {
 int CollectionColumnSurface::Configure(
         int32_t columnX,
         int32_t columnZ,
-        const char *newSurfaceIdName) {
+        const char *newSurfaceIdName,
+        const CGameCtnBlockInfo *newBlockInfo,
+        CatalogConstructionZoneKind newZoneKind,
+        u32 newTerrainBaseY,
+        std::optional<u32> newCollectionLandZoneHeight) {
     x = columnX;
     z = columnZ;
-    return SetSurface(newSurfaceIdName);
+    return SetSource(newSurfaceIdName,
+                     newBlockInfo,
+                     newZoneKind,
+                     newTerrainBaseY,
+                     newCollectionLandZoneHeight);
 }
 
 int CollectionColumnSurface::MatchesColumn(
@@ -102,9 +110,18 @@ int CollectionColumnSurface::MatchesColumn(
     return x == columnX && z == columnZ;
 }
 
-int CollectionColumnSurface::SetSurface(const char *newSurfaceIdName) {
+int CollectionColumnSurface::SetSource(
+        const char *newSurfaceIdName,
+        const CGameCtnBlockInfo *newBlockInfo,
+        CatalogConstructionZoneKind newZoneKind,
+        u32 newTerrainBaseY,
+        std::optional<u32> newCollectionLandZoneHeight) {
     try {
         surfaceIdName = newSurfaceIdName != nullptr ? newSurfaceIdName : "";
+        blockInfo = newBlockInfo;
+        zoneKind = newZoneKind;
+        terrainBaseY = newTerrainBaseY;
+        collectionLandZoneHeight = newCollectionLandZoneHeight;
         return 1;
     } catch (const std::bad_alloc &) {
         return 0;
@@ -115,21 +132,52 @@ const char *CollectionColumnSurface::SurfaceIdName() const {
     return surfaceIdName.empty() ? nullptr : surfaceIdName.c_str();
 }
 
+const CGameCtnBlockInfo *CollectionColumnSurface::BlockInfo() const {
+    return blockInfo;
+}
+
+CatalogConstructionZoneKind CollectionColumnSurface::ZoneKind() const {
+    return zoneKind;
+}
+
+bool CollectionColumnSurface::IsFullUnderground(u32 y) const {
+    if (y > terrainBaseY) {
+        return false;
+    }
+    if (zoneKind != CatalogConstructionZoneKind::Frontier) {
+        return true;
+    }
+    return collectionLandZoneHeight.has_value() &&
+           static_cast<uint64_t>(y) + *collectionLandZoneHeight <=
+                   static_cast<uint64_t>(terrainBaseY);
+}
+
 int CollectionColumnSurfaces::Upsert(
         int32_t x,
         int32_t z,
-        const char *surfaceIdName) {
-    if (surfaceIdName == nullptr || surfaceIdName[0] == '\0') {
-        return 1;
-    }
+        const char *surfaceIdName,
+        const CGameCtnBlockInfo *blockInfo,
+        CatalogConstructionZoneKind zoneKind,
+        u32 terrainBaseY,
+        std::optional<u32> collectionLandZoneHeight) {
     for (CollectionColumnSurface &column : columns) {
         if (column.MatchesColumn(x, z)) {
-            return column.SetSurface(surfaceIdName);
+            return column.SetSource(surfaceIdName,
+                                    blockInfo,
+                                    zoneKind,
+                                    terrainBaseY,
+                                    collectionLandZoneHeight);
         }
     }
     try {
         CollectionColumnSurface column;
-        if (!column.Configure(x, z, surfaceIdName)) {
+        if (!column.Configure(x,
+                              z,
+                              surfaceIdName,
+                              blockInfo,
+                              zoneKind,
+                              terrainBaseY,
+                              collectionLandZoneHeight)) {
             return 0;
         }
         columns.push_back(std::move(column));
@@ -148,6 +196,40 @@ const char *CollectionColumnSurfaces::Find(int32_t x, int32_t z) const {
     return nullptr;
 }
 
+const CGameCtnBlockInfo *CollectionColumnSurfaces::FindBlockInfo(
+        int32_t x,
+        int32_t z) const {
+    for (const CollectionColumnSurface &column : columns) {
+        if (column.MatchesColumn(x, z)) {
+            return column.BlockInfo();
+        }
+    }
+    return nullptr;
+}
+
+CatalogConstructionZoneKind CollectionColumnSurfaces::FindZoneKind(
+        int32_t x,
+        int32_t z) const {
+    for (const CollectionColumnSurface &column : columns) {
+        if (column.MatchesColumn(x, z)) {
+            return column.ZoneKind();
+        }
+    }
+    return CatalogConstructionZoneKind::Flat;
+}
+
+bool CollectionColumnSurfaces::IsFullUnderground(
+        int32_t x,
+        u32 y,
+        int32_t z) const {
+    for (const CollectionColumnSurface &column : columns) {
+        if (column.MatchesColumn(x, z)) {
+            return column.IsFullUnderground(y);
+        }
+    }
+    return false;
+}
+
 int CollectionColumnSurfaces::AddBlockSurfaces(
         const CGameCtnReplayMapInputBlock &block,
         const ReplaySceneBlockDefinition &definition,
@@ -160,8 +242,23 @@ int CollectionColumnSurfaces::AddBlockSurfaces(
             ? groundUnits
             : blockInfo->BlockUnitInfos(
                     definition.Placement().UsesGroundMobilFamily() ? 1 : 0);
+    const CatalogConstructionZoneKind zoneKind =
+            definition.Type() == EBlockType::Frontier
+            ? CatalogConstructionZoneKind::Frontier
+            : CatalogConstructionZoneKind::Flat;
+    if (zoneKind == CatalogConstructionZoneKind::Frontier &&
+        !definition.CollectionLandZoneHeight().has_value()) {
+        return 0;
+    }
     if (units.empty()) {
-        return 1;
+        const GmNat3 &coordinate = block.Coordinate();
+        return Upsert(SignedCoordinate(coordinate.x),
+                      SignedCoordinate(coordinate.z),
+                      nullptr,
+                      blockInfo,
+                      zoneKind,
+                      coordinate.y,
+                      definition.CollectionLandZoneHeight());
     }
     const char *defaultSurface = SurfaceName(units.front().get());
     for (const auto &unit : units) {
@@ -169,19 +266,30 @@ int CollectionColumnSurfaces::AddBlockSurfaces(
         if (surface == nullptr || surface[0] == '\0') {
             surface = defaultSurface;
         }
-        if (surface == nullptr) {
-            continue;
-        }
         const GmInt3 rotated = RotatedOffset(
                 *blockInfo, *unit, block.Direction(), true);
         const GmNat3 &coordinate = block.Coordinate();
         if (!Upsert(SignedCoordinate(coordinate.x) + rotated.x,
                     SignedCoordinate(coordinate.z) + rotated.z,
-                    surface)) {
+                    surface,
+                    blockInfo,
+                    zoneKind,
+                    coordinate.y,
+                    definition.CollectionLandZoneHeight())) {
             return 0;
         }
     }
     return 1;
+}
+
+ReplayClipConstructionDecision ResolveClipConstructionDecision(
+        CatalogConstructionZoneKind realZoneKind,
+        bool usesGroundMobilFamily,
+        bool isFullUnderground) {
+    return !isFullUnderground && usesGroundMobilFamily &&
+                   realZoneKind == CatalogConstructionZoneKind::Frontier
+            ? ReplayClipConstructionDecision::NoMobil
+            : ReplayClipConstructionDecision::ConstructMobil;
 }
 
 CSceneMobil *ReplaySceneAssetResolver::SelectMobil(
@@ -190,6 +298,14 @@ CSceneMobil *ReplaySceneAssetResolver::SelectMobil(
         u32 variantIndex) const {
     return assets != nullptr && sourceAsset.IsValid()
             ? assets->Mobil(sourceAsset, selectorGroup != 0u, variantIndex)
+            : nullptr;
+}
+
+CGameCtnBlockInfoClip *ReplaySceneAssetResolver::ClipBlockInfo(
+        BlockInfoAssetHandle sourceAsset) const {
+    return assets != nullptr && sourceAsset.IsValid()
+            ? dynamic_cast<CGameCtnBlockInfoClip *>(
+                      assets->BlockInfo(sourceAsset))
             : nullptr;
 }
 
@@ -203,7 +319,7 @@ std::optional<std::string> ReplaySceneAssetResolver::FirstGroundSurface(
 int ReplaySceneUnit::Configure(
         const CGameCtnReplayMapInputBlock &block,
         const ReplaySceneBlockDefinition &definition,
-        const CGameCtnBlockUnitInfo &sourceUnitInfo,
+        CGameCtnBlockUnitInfo &sourceUnitInfo,
         const GmInt3 &rotatedOffset) {
     try {
         const GmNat3 &coordinate = block.Coordinate();
@@ -238,6 +354,14 @@ BlockInfoAssetHandle ReplaySceneUnit::SourceAssetForSide(
             ? unitInfo->JunctionAt(static_cast<ECardinalDir>(side))
             : nullptr;
     return clip != nullptr ? clip->SourceAsset() : BlockInfoAssetHandle{};
+}
+
+void ReplaySceneUnit::SetSourceClipForSide(
+        u32 side,
+        CGameCtnBlockInfoClip *clip) const {
+    if (unitInfo != nullptr && side < 4u && clip != nullptr) {
+        unitInfo->SetJunction(static_cast<ECardinalDir>(side), clip);
+    }
 }
 
 int32_t ReplaySceneUnit::X() const { return x; }
@@ -285,9 +409,11 @@ const ReplaySceneUnit *ReplaySceneUnits::FindAtCoord(
         int32_t x,
         int32_t y,
         int32_t z) const {
-    for (const ReplaySceneUnit &unit : units) {
-        if (unit.MatchesCoord(x, y, z)) {
-            return &unit;
+    // CGameCtnChallenge::UpdateFieldUnits replaces an earlier attachment, so
+    // CGameCtnChallenge::GetBlockUnitFromPlayField sees the latest unit.
+    for (auto it = units.rbegin(); it != units.rend(); ++it) {
+        if (it->MatchesCoord(x, y, z)) {
+            return &*it;
         }
     }
     return nullptr;
@@ -306,7 +432,8 @@ const ReplaySceneUnit *ReplaySceneUnits::FindFirstForPlacement(
 int ReplaySceneUnits::ApplyClipNeighbourSourceSides(
         const CGameCtnReplayMapInput &mapInput,
         const ReplaySceneAssetResolver &assetResolver,
-        ReplaySceneDefinition &scene) const {
+        ReplaySceneDefinition &scene,
+        const CollectionColumnSurfaces *columnSurfaces) const {
     for (ReplaySceneBlockDefinition &definition : scene.MutableBlocks()) {
         if (!definition.IsClip()) {
             continue;
@@ -318,6 +445,28 @@ int ReplaySceneUnits::ApplyClipNeighbourSourceSides(
             continue;
         }
         auto &clipSources = definition.MutableClipSourceMobils();
+        const GmNat3 &coordinate = block->Coordinate();
+        const CatalogConstructionZoneKind realZoneKind =
+                columnSurfaces != nullptr
+                ? columnSurfaces->FindZoneKind(
+                          SignedCoordinate(coordinate.x),
+                          SignedCoordinate(coordinate.z))
+                : CatalogConstructionZoneKind::Flat;
+        const bool isFullUnderground = columnSurfaces != nullptr &&
+                columnSurfaces->IsFullUnderground(
+                        SignedCoordinate(coordinate.x),
+                        coordinate.y,
+                        SignedCoordinate(coordinate.z));
+        if (ResolveClipConstructionDecision(
+                    realZoneKind,
+                    definition.Placement().UsesGroundMobilFamily(),
+                    isFullUnderground) ==
+                ReplayClipConstructionDecision::NoMobil) {
+            for (CMwNodRef<CSceneMobil> &source : clipSources) {
+                source.MwSetNod(nullptr);
+            }
+            continue;
+        }
         for (u32 side = 0u; side < clipSources.size(); ++side) {
             const GmInt3 neighbor = NeighbourCoordinate(*block, side);
             const ReplaySceneUnit *neighborUnit =
@@ -336,12 +485,17 @@ int ReplaySceneUnits::ApplyClipNeighbourSourceSides(
             if (!sourceAsset.IsValid()) {
                 continue;
             }
+            CGameCtnBlockInfoClip *sourceClip =
+                    assetResolver.ClipBlockInfo(sourceAsset);
+            if (sourceClip != nullptr) {
+                neighborUnit->SetSourceClipForSide(sourceSlot, sourceClip);
+            }
             CSceneMobil *sourceMobil = assetResolver.SelectMobil(
                     sourceAsset,
                     definition.Placement().UsesGroundMobilFamily() ? 1u : 0u,
                     definition.Placement().VariantIndex());
             if (sourceMobil == nullptr) {
-                return 0;
+                continue;
             }
             clipSources[side].MwSetNod(sourceMobil);
         }
@@ -427,7 +581,7 @@ int ReplaySceneSurfaceResolver::ReplacementRemapApplies(
         definition->Type() <= EBlockType::Frontier) {
         return 0;
     }
-    const char *realZoneSurface = RealZoneSurfaceIdName(okOut);
+    const char *realZoneId = RealZoneIdName(okOut);
     if (okOut != nullptr && *okOut == 0) {
         return 0;
     }
@@ -440,13 +594,43 @@ int ReplaySceneSurfaceResolver::ReplacementRemapApplies(
         }
         return 0;
     }
-    if (!sourceSurface || realZoneSurface == nullptr ||
-        SameText(sourceSurface->c_str(), realZoneSurface)) {
+    if (!sourceSurface || realZoneId == nullptr ||
+        SameText(sourceSurface->c_str(), realZoneId)) {
         return 0;
     }
     return assets->HasSurfaceReplacement(collectionName,
                                          *sourceSurface,
-                                         realZoneSurface);
+                                         realZoneId);
+}
+
+const char *ReplaySceneSurfaceResolver::RealZoneIdName(
+        int *okOut) const {
+    if (okOut != nullptr) {
+        *okOut = 1;
+    }
+    if (scene == nullptr || block == nullptr || definition == nullptr ||
+        units == nullptr || columnSurfaces == nullptr ||
+        !definition->PlacementId()) {
+        if (okOut != nullptr) {
+            *okOut = 0;
+        }
+        return nullptr;
+    }
+    const ReplaySceneUnit *firstUnit =
+            units->FindFirstForPlacement(*definition->PlacementId());
+    if (firstUnit == nullptr) {
+        if (okOut != nullptr) {
+            *okOut = 0;
+        }
+        return nullptr;
+    }
+    const CGameCtnBlockInfo *zoneBlockInfo =
+            columnSurfaces->FindBlockInfo(firstUnit->X(), firstUnit->Z());
+    const char *zoneId = scene->ConstructionZoneIdentifier(zoneBlockInfo);
+    if ((zoneId == nullptr || zoneId[0] == '\0') && okOut != nullptr) {
+        *okOut = 0;
+    }
+    return zoneId;
 }
 
 const char *ReplaySceneSurfaceResolver::RealZoneSurfaceIdName(

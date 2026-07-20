@@ -32,7 +32,12 @@ int CGameCtnReplayStaticSolidArchiveFeedback::ApplyValue(
         int nested,
         int deferUntilCompressedPageRead) {
     if (reader == nullptr) {
-        return 0;
+        if (deferUntilCompressedPageRead) {
+            return 0;
+        }
+        // Decoded archives retain feedback accounting without mutating a cipher.
+        RecordDirect(nested);
+        return 1;
     }
     if (deferUntilCompressedPageRead) {
         return QueueDeferred(value, nested);

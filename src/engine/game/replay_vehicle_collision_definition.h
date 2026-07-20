@@ -4,8 +4,10 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <new>
 #include <optional>
 #include <utility>
+#include <vector>
 
 #include "engine/core/gm_types.h"
 #include "engine/game/surface_material.h"
@@ -66,6 +68,7 @@ inline constexpr VehicleCollisionRole VehicleWheelCollisionRole(
 }
 
 struct VehicleCollisionShapeDefinition {
+    std::uint32_t surfaceType = 1u;
     GmIso4 localPose{};
     GmBoxAligned localBounds{};
     GmLocalMaterialIndex localMaterial{};
@@ -73,29 +76,74 @@ struct VehicleCollisionShapeDefinition {
             EPlugSurfaceMaterialId_Concrete;
 };
 
+struct VehicleCollisionShapeEntry {
+    std::optional<VehicleCollisionRole> wheelRole;
+    std::optional<std::size_t> parentShapeIndex;
+    VehicleCollisionShapeDefinition shape;
+};
+
 class VehicleCollisionModelDefinition {
 public:
-    bool SetShape(VehicleCollisionRole role,
-                  VehicleCollisionShapeDefinition shape) {
-        const std::size_t index = VehicleCollisionRoleIndex(role);
-        if (index >= shapes.size() || shapes[index].has_value()) {
+    bool AddBodyShape(
+            VehicleCollisionShapeDefinition shape,
+            std::optional<std::size_t> parentShapeIndex = std::nullopt) {
+        try {
+            shapes.push_back(VehicleCollisionShapeEntry{
+                    std::nullopt, parentShapeIndex, std::move(shape)});
+        } catch (const std::bad_alloc &) {
             return false;
         }
-        shapes[index] = std::move(shape);
         return true;
     }
 
-    const VehicleCollisionShapeDefinition *Shape(
-            VehicleCollisionRole role) const {
-        const std::size_t index = VehicleCollisionRoleIndex(role);
-        return index < shapes.size() && shapes[index].has_value()
-                ? &*shapes[index]
-                : nullptr;
+    bool SetWheelShape(VehicleCollisionRole role,
+                       VehicleCollisionShapeDefinition shape,
+                       std::optional<std::size_t> parentShapeIndex =
+                               std::nullopt) {
+        if (!IsVehicleWheelCollisionRole(role) || Shape(role) != nullptr) {
+            return false;
+        }
+        try {
+            shapes.push_back(VehicleCollisionShapeEntry{
+                    role, parentShapeIndex, std::move(shape)});
+        } catch (const std::bad_alloc &) {
+            return false;
+        }
+        return true;
+    }
+
+    const VehicleCollisionShapeDefinition *Shape(VehicleCollisionRole role)
+            const {
+        for (const VehicleCollisionShapeEntry &entry : shapes) {
+            if (entry.wheelRole == role) {
+                return &entry.shape;
+            }
+        }
+        return nullptr;
+    }
+
+    const std::vector<VehicleCollisionShapeEntry> &ShapesInArchiveOrder()
+            const {
+        return shapes;
     }
 
     bool IsComplete() const {
-        for (const auto &shape : shapes) {
-            if (!shape.has_value()) {
+        bool hasBody = false;
+        for (std::size_t index = 0u; index < shapes.size(); index++) {
+            const VehicleCollisionShapeEntry &entry = shapes[index];
+            if (entry.parentShapeIndex.has_value() &&
+                *entry.parentShapeIndex >= index) {
+                return false;
+            }
+            hasBody = hasBody || !entry.wheelRole.has_value();
+        }
+        if (!hasBody) {
+            return false;
+        }
+        for (VehicleCollisionRole role :
+             VehicleCollisionRolesInDetectorOrder) {
+            if (IsVehicleWheelCollisionRole(role) &&
+                Shape(role) == nullptr) {
                 return false;
             }
         }
@@ -103,8 +151,7 @@ public:
     }
 
 private:
-    std::array<std::optional<VehicleCollisionShapeDefinition>,
-               VehicleCollisionRolesInDetectorOrder.size()> shapes{};
+    std::vector<VehicleCollisionShapeEntry> shapes;
 };
 
 #endif

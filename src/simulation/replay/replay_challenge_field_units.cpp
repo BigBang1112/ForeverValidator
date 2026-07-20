@@ -204,7 +204,7 @@ bool ChallengeFieldUnits::BuildPhaseUnits(
         const CGameCtnReplayMapInput &mapInput,
         TerrainTopMarkers &terrainMarkers) {
     if (phase == BuildPhase::PlacedMobils &&
-        !terrainMarkers.BuildFromFieldUnits(mapInput, *this)) {
+        !terrainMarkers.BuildFromFieldUnits(scene, mapInput, *this)) {
         return false;
     }
 
@@ -234,7 +234,7 @@ bool ChallengeFieldUnits::Build(
                          scene,
                          mapInput,
                          terrainMarkers) ||
-        units_.empty() || missingBlockInfoCount_ != 0u) {
+        missingBlockInfoCount_ != 0u) {
         Clear();
         return false;
     }

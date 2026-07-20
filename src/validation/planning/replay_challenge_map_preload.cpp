@@ -7,8 +7,16 @@
 #include "simulation/runtime/replay_map_environment.h"
 #include "simulation/runtime/replay_simulation_session.h"
 ReplayChallengePreloadResult
-CGameCtnReplayChallengeMapPreload::PreloadMapInput() {
-    if (BuildReplayWaterDefinition(mapInput, &waterDefinition) != 0) {
+CGameCtnReplayChallengeMapPreload::PreloadMapInput(
+        CGameCtnChallenge &challenge) {
+    const auto &collection = sceneDefinition.Collection();
+    const auto &decoration = sceneDefinition.DecorationSize();
+    if (!collection.has_value() || !decoration.has_value() ||
+        BuildReplayWaterDefinition(
+                challenge,
+                *collection,
+                *decoration,
+                &waterDefinition) != 0) {
         return ReplayChallengePreloadResult::WaterDefinitionFailed;
     }
     return ReplayChallengePreloadResult::Success;
@@ -21,11 +29,14 @@ CGameCtnReplayChallengeMapPreload::WaterDefinition(void) const {
 
 ReplayChallengePreloadResult
 CGameCtnReplayChallengeMapPreload::PreloadSceneDefinition() {
-    if (assets == nullptr ||
+    if (mapAssets == nullptr || decorationAssets == nullptr ||
         !BuildReplaySceneDefinition(
-                mapInput, *assets, sceneDefinition) ||
+                mapInput,
+                *mapAssets,
+                *decorationAssets,
+                sceneDefinition) ||
         !sceneDefinition.AppendAutomaticBase(mapInput,
-                                             *assets)) {
+                                             *mapAssets)) {
         return ReplayChallengePreloadResult::SceneDefinitionFailed;
     }
     sceneDefinitionReady = true;
@@ -46,54 +57,91 @@ CGameCtnReplayChallengeMapPreload::PreloadChallengeConstruction() {
                     sceneDefinition,
                     load.construction,
                     load.report);
-    int challengePreloaded = 0;
     if (challengeBuilt && load.construction.Challenge() != nullptr &&
         simulationSession != nullptr) {
-        constructedBlockPlacements.PopulateFromChallenge(
-                *load.construction.Challenge());
-        challengePreloaded =
-                simulationSession->PreloadChallenge(load.construction);
+        CGameCtnChallenge *challenge = load.construction.Challenge();
+        ReplaySceneBlockPlacements placements;
+        placements.PopulateFromChallenge(*challenge);
+        placements.SetRetainedLogicalStartPlacements(
+                load.construction.RetainedLogicalStartPlacements());
+        const ReplayChallengePreloadResult waterResult =
+                PreloadMapInput(*challenge);
+        if (waterResult != ReplayChallengePreloadResult::Success) {
+            return waterResult;
+        }
+        load.construction.SetPreparedBlockPlacements(
+                std::move(placements));
+        return PreloadStaticSolidSources(load.construction);
     }
-    if (!challengePreloaded) {
-        return ReplayChallengePreloadResult::ChallengeConstructionFailed;
-    }
-    return ReplayChallengePreloadResult::Success;
+    return ReplayChallengePreloadResult::ChallengeConstructionFailed;
 }
 
 ReplayChallengePreloadResult CGameCtnReplayChallengeMapPreload::Preload(
         const CGameCtnReplayMapInput &input,
         ReplayAssetRepository &assetRepository,
         ReplaySimulationSession &session) {
+    return Preload(input,
+                   assetRepository,
+                   assetRepository,
+                   session);
+}
+
+ReplayChallengePreloadResult CGameCtnReplayChallengeMapPreload::Preload(
+        const CGameCtnReplayMapInput &input,
+        ReplayAssetRepository &mapAssetRepository,
+        ReplayAssetRepository &decorationAssetRepository,
+        ReplaySimulationSession &session) {
     try {
         mapInput = input;
     } catch (const std::bad_alloc &) {
         return ReplayChallengePreloadResult::AllocationFailed;
     }
-    assets = &assetRepository;
+    mapAssets = &mapAssetRepository;
+    decorationAssets = &decorationAssetRepository;
     simulationSession = &session;
-    ReplayChallengePreloadResult result = PreloadMapInput();
-    if (result != ReplayChallengePreloadResult::Success) {
-        return result;
-    }
-    result = PreloadSceneDefinition();
+    ReplayChallengePreloadResult result = PreloadSceneDefinition();
     if (result != ReplayChallengePreloadResult::Success) {
         return result;
     }
     result = PreloadChallengeConstruction();
-    if (result != ReplayChallengePreloadResult::Success) {
-        return result;
-    }
-    return PreloadStaticSolidSources();
+    return result;
 }
 
 ReplayChallengePreloadResult
-CGameCtnReplayChallengeMapPreload::PreloadStaticSolidSources() {
+CGameCtnReplayChallengeMapPreload::PreloadStaticSolidSources(
+        CGameCtnChallengeConstruction &construction) {
     StaticSceneModelCollection sceneModels;
-    if (assets != nullptr && simulationSession != nullptr &&
-        assets->BuildStaticScene(mapInput,
-                                 constructedBlockPlacements,
-                                 &sceneModels) &&
-        simulationSession->InstallStaticScene(std::move(sceneModels))) {
+    CGameCtnChallenge *challenge = construction.Challenge();
+    const ReplaySceneBlockPlacements *placements =
+            construction.PreparedBlockPlacements();
+    if (mapAssets == nullptr || decorationAssets == nullptr ||
+        simulationSession == nullptr || challenge == nullptr ||
+        placements == nullptr ||
+        !mapAssets->BuildStaticSceneWithDecorationAssets(
+                *decorationAssets,
+                mapInput,
+                *placements,
+                &sceneModels)) {
+        return ReplayChallengePreloadResult::StaticSceneFailed;
+    }
+    const auto &collection = sceneDefinition.Collection();
+    const auto &decoration = sceneDefinition.DecorationSize();
+    if (collection.has_value() && decoration.has_value() &&
+        collection->water.has_value() &&
+        collection->water->geometryWaterPlanes &&
+        BuildReplayGeometryWaterDefinition(
+                *challenge,
+                *collection,
+                *decoration,
+                *placements,
+                sceneModels,
+                &waterDefinition) != 0) {
+        return ReplayChallengePreloadResult::WaterDefinitionFailed;
+    }
+    if (!simulationSession->PreloadChallenge(construction)) {
+        return ReplayChallengePreloadResult::ChallengeConstructionFailed;
+    }
+    if (simulationSession->InstallStaticScene(std::move(sceneModels))) {
         return ReplayChallengePreloadResult::Success;
     }
     return ReplayChallengePreloadResult::StaticSceneFailed;

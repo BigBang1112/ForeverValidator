@@ -117,7 +117,9 @@ public:
                 std::numeric_limits<int32_t>::max());
         if (metadata.durationMs > signedTimeLimit ||
             (metadata.respawnCount.has_value() &&
-             *metadata.respawnCount > signedTimeLimit)) {
+             *metadata.respawnCount > signedTimeLimit) ||
+            (metadata.stuntScore.has_value() &&
+             *metadata.stuntScore > signedTimeLimit)) {
             return ReplayInputTimelineCreateResult::TimeOutOfRange;
         }
 

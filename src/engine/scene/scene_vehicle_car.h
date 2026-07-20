@@ -217,6 +217,9 @@ public:
   };
 
 private:
+  friend struct CSceneVehicleCarLegacyEngineTestPeer;
+  friend struct CSceneVehicleCarGearedEngineTestPeer;
+
   std::optional<std::reference_wrapper<CSceneVehicleStruct>> vehicleStruct;
   std::optional<std::reference_wrapper<CSceneSoundSource>> turboSoundSource;
   CSceneVehicleCarWheelSurfaceObserver *wheelSurfaceObserver = nullptr;
@@ -248,6 +251,7 @@ public:
   float GetRouletteCurrentBoostFactor(void) const;
   void SetTurboRouletteTickOrigin(unsigned long tick);
   float GetMaxSpeed(void);
+  void OnEnterScene(void) override;
   void VehicleReset(void) override;
   void VehicleBlockSpeedSet(int isBlocked) override;
   void VehicleBlockSpeed2Set(int isBlocked) override;
@@ -272,6 +276,9 @@ public:
   }
   SControlInput ControlInput(void) const;
   void ApplyControlInput(const SControlInput &input);
+  const SVehicleCarState &ReplayPhysicsState(void) const {
+    return frameHistory.physicsCurrent;
+  }
   void ConfigureSimulationLimits(float maximumLinearSpeed,
                                  float reverseTransitionSpeed);
   void EstablishRaceSpawnFrame(const GmIso4 &spawnFrame);
@@ -597,8 +604,7 @@ private:
                             const GmVec3 &linearSpeed, float visualSteerYaw);
   void TryEnterForwardBurnout(const CSceneVehicleCarTuning *tuning,
                               const GmVec3 &linearSpeed, float visualSteerYaw,
-                              float frameY, u32 tick, int waterActive,
-                              int hasGroundMaterial);
+                              float frameY, u32 tick, int hasGroundMaterial);
   void TryEnterReverseBurnout(const CSceneVehicleCarTuning *tuning,
                               const GmVec3 &linearSpeed, float drive,
                               float frameY, u32 tick);

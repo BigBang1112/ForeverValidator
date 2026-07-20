@@ -3,6 +3,8 @@
 
 constexpr const char *TmnfPackListNameSalt =
         "6611992868945B0B59536FC3226F3FD0";
+constexpr const char *TmnfPackListSignatureSalt =
+        "E3554B5828AF14F11AA42A5EAF0AEFC8";
 constexpr const char *TmnfPackKeySaltEven =
         "B97C1205648A66E04F86A1B5D5AF9862";
 constexpr const char *TmnfPackKeySaltOdd =

@@ -203,6 +203,11 @@ private:
 using GmMeshOctree = GmOctree<SMeshOctreeCell>;
 
 struct GmSurfMesh : GmSurf {
+    enum class PlaneSource {
+        Generated,
+        Archived,
+    };
+
     GmSurfMesh(void);
     ~GmSurfMesh(void) override;
     void GetMeshBoundingBox(GmBoxAligned &out) const;
@@ -211,7 +216,8 @@ struct GmSurfMesh : GmSurf {
 
     bool SetGeometry(std::vector<GmVec3> meshVertices,
                      std::vector<GmSurfMeshTriangle> meshTriangles,
-                     std::vector<GmMeshOctreeCell> meshOctreeCells = {});
+                     std::vector<GmMeshOctreeCell> meshOctreeCells = {},
+                     PlaneSource planeSource = PlaneSource::Generated);
     void ClearGeometry(void);
     void TranslateVerticesAbove(float yThreshold, float yDelta);
     void TransformByNOMat(const GmIso4 &transform);

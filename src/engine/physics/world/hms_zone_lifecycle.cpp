@@ -3,6 +3,7 @@
 #include "engine/physics/dynamics/hms_force_field.h"
 #include "engine/physics/world/hms_zone.h"
 #include "engine/scene/scene_vehicle_water_zone.h"
+#include <new>
 
 static const float CHmsZoneDynamic_DefaultDampingCoef = 1.0f;
 
@@ -28,6 +29,28 @@ CSceneVehicleWaterZone *CHmsZone::WaterZone() {
 
 const CSceneVehicleWaterZone *CHmsZone::WaterZone() const {
     return const_cast<CHmsZone *>(this)->WaterZone();
+}
+
+bool CHmsZone::AppendWaterPlaneEq(const GmVec4 &plane) {
+    for (const GmVec4 &candidate : waterPlaneEqs_) {
+        if (candidate.PlaneEqIsNearlyEqual(plane, 0.0f, 0.0f)) {
+            return true;
+        }
+    }
+    try {
+        waterPlaneEqs_.push_back(plane);
+        return true;
+    } catch (const std::bad_alloc &) {
+        return false;
+    }
+}
+
+std::size_t CHmsZone::WaterPlaneEqCount(void) const {
+    return waterPlaneEqs_.size();
+}
+
+const GmVec4 *CHmsZone::WaterPlaneEqAt(std::size_t index) const {
+    return index < waterPlaneEqs_.size() ? &waterPlaneEqs_[index] : nullptr;
 }
 
 CHmsCollisionManagerSZone *CHmsZoneDynamic::GetCollisionZone(void) {

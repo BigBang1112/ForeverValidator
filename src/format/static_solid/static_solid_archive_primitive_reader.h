@@ -22,8 +22,6 @@ struct CGameCtnReplayStaticSolidArchivePrimitiveReader {
             CGameCtnReplayStaticSolidArchiveByteStream *byteStream);
     static int SkipFrustumIso4(
             CGameCtnReplayStaticSolidArchiveByteStream *byteStream);
-    static int SkipInlineArchivePayload(
-            CGameCtnReplayStaticSolidArchiveByteStream *byteStream);
     static int SkipD3dFormatArray(
             CGameCtnReplayStaticSolidArchiveByteStream *byteStream);
 };

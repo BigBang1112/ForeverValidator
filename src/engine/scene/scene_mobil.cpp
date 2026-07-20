@@ -29,6 +29,23 @@ CPlugSolid *CSceneMobil::ExistingSolid(void) const {
     return item != nullptr ? item->Solid() : nullptr;
 }
 
+int CSceneMobil::DoesMotionChangeLocations(void) {
+    return replayMotionChangesLocations ? 1 : 0;
+}
+
+void CSceneMobil::SetReplayMotionChangesLocations(int changesLocations) {
+    replayMotionChangesLocations = changesLocations != 0;
+}
+
+void CSceneMobil::SetReplayCollisionUsesInitialTransform(
+        int usesInitialTransform) {
+    replayCollisionUsesInitialTransform = usesInitialTransform != 0;
+}
+
+int CSceneMobil::ReplayCollisionUsesInitialTransform(void) const {
+    return replayCollisionUsesInitialTransform ? 1 : 0;
+}
+
 void CSceneMobil::AddTree(CPlugTree *tree) {
     if (tree == nullptr) {
         return;
@@ -311,6 +328,9 @@ CSceneMobil *CSceneMobil::CreateModelInstance(void) {
     clone->id = id;
     clone->staticSolidAsset = staticSolidAsset;
     clone->initialItemProperties = initialItemProperties;
+    clone->replayMotionChangesLocations = replayMotionChangesLocations;
+    clone->replayCollisionUsesInitialTransform =
+            replayCollisionUsesInitialTransform;
     if (hmsItem != nullptr) {
         clone->HmsItem()->SetProperties(hmsItem->GetProperties());
     }

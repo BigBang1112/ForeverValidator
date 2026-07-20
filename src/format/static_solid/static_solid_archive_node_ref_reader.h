@@ -10,6 +10,20 @@ public:
     virtual int ReadNodeRef(
             ArchiveNodeReference *nodeRefOut) = 0;
 
+    virtual int ReadNodeRefWithInlineState(
+            ArchiveNodeReference *nodeRefOut,
+            int *isInternalOut) {
+        if (isInternalOut != nullptr) {
+            *isInternalOut = 0;
+        }
+        return ReadNodeRef(nodeRefOut);
+    }
+
+    virtual int ReadFidRef(ArchiveNodeReference *nodeRefOut) {
+        (void)nodeRefOut;
+        return 0;
+    }
+
     int ReadNodPtr(u32 *nodeIndexOut) {
         ArchiveNodeReference nodeRef =
                 ArchiveNodeReference::Invalid();

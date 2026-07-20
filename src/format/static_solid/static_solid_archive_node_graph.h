@@ -2,9 +2,11 @@
 #define TMNF_STATIC_SOLID_ARCHIVE_NODE_GRAPH_H
 
 #include "engine/core/engine_types.h"
+#include <optional>
 #include <string>
 #include <vector>
 
+#include "format/archive/hms_item_archive_state.h"
 #include "format/static_solid/static_scene_archive_loader.h"
 #include "format/archive/archive_node_reference.h"
 #include "format/static_solid/static_solid_external_node_paths.h"
@@ -54,6 +56,8 @@ public:
         const std::string &Name() const;
         int HasExternalName() const;
         int SetName(const std::string &name);
+        void SetHmsItemState(const HmsItemArchiveWords &state);
+        const std::optional<HmsItemArchiveWords> &HmsItemState() const;
         void MarkInline(u32 classId);
         int MarkExternal(u32 loadable, u32 folderIndex, const std::string &name);
         void SetClassId(u32 classId);
@@ -66,6 +70,7 @@ public:
         u32 loadable = 0u;
         u32 folderIndex = 0xffffffffu;
         std::string name;
+        std::optional<HmsItemArchiveWords> hmsItemState;
     };
 
     int EnsureNodeCapacity(u32 index);
@@ -75,6 +80,10 @@ public:
             ArchiveNodeReference nodeRef) const;
     int SetNodeName(ArchiveNodeReference nodeRef,
                     const std::string &name);
+    int RememberHmsItemState(ArchiveNodeReference nodeRef,
+                             const HmsItemArchiveWords &state);
+    const HmsItemArchiveWords *HmsItemStateForSceneMobil(
+            ArchiveNodeReference nodeRef) const;
 
     void MarkInlineNode(ArchiveNodeReference nodeRef,
                         u32 classId);

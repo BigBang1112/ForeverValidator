@@ -28,6 +28,29 @@ CHmsItem::Properties ReplayVehicleItemProperties() {
 
 }  // namespace
 
+ReplayStuntSimulationState BuildReplayStuntSimulationState(
+        const ReplaySimulationStepExecution &execution,
+        const CSceneVehicleCar::SVehicleCarState &physics,
+        const ReplayControlTick &tick) {
+    ReplayStuntSimulationState state;
+    state.tickTimeMs = tick.timeMs;
+    state.inputQueryTimeOffsetMs = tick.periodMs;
+    state.raceStart = tick.actions.resetAtRaceStart;
+    state.finishRace = tick.actions.finishRace;
+    state.vehicleLocation.Set(
+            execution.writeFrame.rotation,
+            execution.writeFrame.position);
+    state.forwardSpeed = physics.forwardSpeed;
+    state.sideSpeed = physics.sideSpeed;
+    state.hasWheelContact = physics.hasWheelContact;
+    state.hasBodyContact = physics.hasBodyContact;
+    state.bodyContactVerticalAngle = physics.bodyContactVerticalAngle;
+    state.bodyContactHorizontalAngle = physics.bodyContactHorizontalAngle;
+    state.noGroundFrictionGuard = physics.noGroundFrictionGuard;
+    state.inputLastChangeTimeMs = tick.stuntsInput.lastChangeTimeMs;
+    return state;
+}
+
 struct ReplaySimulationRuntime::State {
     explicit State(CTrackManiaRace &race)
         : vehicle(race), race(race) {}
@@ -40,6 +63,7 @@ struct ReplaySimulationRuntime::State {
     const ReplaySimulationDefinition *definition = nullptr;
     bool staticSceneReady = false;
     bool firstStep = true;
+    bool stuntsEnabled = false;
 };
 
 ReplaySimulationRuntime::ReplaySimulationRuntime(CTrackManiaRace &race)
@@ -84,6 +108,10 @@ ReplaySimulationRunResult ReplaySimulationRuntime::Start(
     if (parameters.has_value()) {
         state.body.InstallDynaParameters(*parameters);
     }
+    state.stuntsEnabled = firstTick.actions.enableStuntsSimulation;
+    state.race.ConfigureReplayStuntsSimulation(
+            state.stuntsEnabled,
+            firstTick.actions.stuntsTimeLimitMs);
     state.body.SetSpawnLocation(
             BuildReplayValidationSpawnLocation(
                     spawnLocation, validationSeed));
@@ -118,12 +146,22 @@ ReplaySimulationStepExecution ReplaySimulationRuntime::Step(
          ++respawnIndex) {
         if (state.vehicle.Respawn(state.body)) {
             ++execution.respawnExecutedCount;
+            state.race.ApplyReplayStuntRespawnPenalty(tick.timeMs);
         }
     }
 
     state.world.Step();
     execution.simulatedFrame = state.body.CaptureCurrentFrame();
     execution.writeFrame = state.body.CaptureWriteState();
+    if (state.stuntsEnabled) {
+        const CSceneVehicleCar::SVehicleCarState &physics =
+                car.ReplayPhysicsState();
+        const ReplayStuntSimulationState stuntState =
+                BuildReplayStuntSimulationState(
+                        execution, physics, tick);
+        state.race.SetReplayStuntSimulationState(stuntState);
+        state.race.UpdateStunts();
+    }
     execution.finishTickMs = state.vehicle.FinishTimeMs();
     state.firstStep = false;
     return execution;
@@ -131,4 +169,21 @@ ReplaySimulationStepExecution ReplaySimulationRuntime::Step(
 
 std::optional<std::uint32_t> ReplaySimulationRuntime::FinishTimeMs() const {
     return state_->vehicle.FinishTimeMs();
+}
+
+std::optional<std::uint32_t> ReplaySimulationRuntime::StuntsScore() const {
+    if (!state_->stuntsEnabled) {
+        return std::nullopt;
+    }
+    return state_->race.StuntsScore();
+}
+
+std::optional<std::uint32_t>
+ReplaySimulationRuntime::ApplyReplayStuntTimePenalty(
+        std::uint32_t overtimeMs) {
+    if (!state_->stuntsEnabled) {
+        return std::nullopt;
+    }
+    state_->race.ApplyReplayStuntTimePenalty(overtimeMs);
+    return state_->race.StuntsScore();
 }

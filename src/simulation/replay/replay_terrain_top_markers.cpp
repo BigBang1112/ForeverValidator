@@ -11,9 +11,7 @@ void TerrainTopMarkers::Clear() {
     sizeZ_ = 0u;
 }
 
-bool TerrainTopMarkers::BeginMap(
-        const CGameCtnReplayMapInput &mapInput) {
-    const GmNat3 &mapSize = mapInput.Size();
+bool TerrainTopMarkers::BeginMap(const GmNat3 &mapSize) {
     if (mapSize.x > UINT32_MAX / (mapSize.z != 0u ? mapSize.z : 1u)) {
         return false;
     }
@@ -56,14 +54,18 @@ void TerrainTopMarkers::MarkOccupiedColumn(int32_t x, int32_t z) {
     }
 }
 
-bool TerrainTopMarkers::AddBaseMarkersForUnoccupiedColumns() {
+bool TerrainTopMarkers::AddBaseMarkersForUnoccupiedColumns(
+        u32 defaultZoneHeight) {
+    if (defaultZoneHeight >= INT32_MAX) {
+        return false;
+    }
     for (u32 x = 0u; x < sizeX_; ++x) {
         for (u32 z = 0u; z < sizeZ_; ++z) {
             if (occupiedColumns_[x * sizeZ_ + z] != 0u) {
                 continue;
             }
             if (!AddTopMarker(static_cast<int32_t>(x),
-                              1,
+                              static_cast<int32_t>(defaultZoneHeight) + 1,
                               static_cast<int32_t>(z))) {
                 return false;
             }
@@ -76,9 +78,12 @@ bool TerrainTopMarkers::Contains(
         int32_t x,
         int32_t y,
         int32_t z) const {
-    for (const GmInt3 &marker : markers_) {
-        if (marker.x == x && marker.y == y && marker.z == z) {
-            return true;
+    // A landscape writes Underground below its top and Ground at its top.
+    // Later, shorter landscapes leave higher field units unchanged.
+    for (auto marker = markers_.rbegin(); marker != markers_.rend();
+         ++marker) {
+        if (marker->x == x && marker->z == z && marker->y >= y) {
+            return marker->y == y;
         }
     }
     return false;
@@ -87,7 +92,11 @@ bool TerrainTopMarkers::Contains(
 bool TerrainTopMarkers::BuildFromSceneDefinition(
         const ReplaySceneDefinition &scene,
         const CGameCtnReplayMapInput &mapInput) {
-    if (!BeginMap(mapInput)) {
+    const auto &decorationSize = scene.DecorationSize();
+    if (!decorationSize ||
+        !ReplayDecorationSizeMatchesMap(
+                mapInput, decorationSize->mapSize) ||
+        !BeginMap(decorationSize->mapSize)) {
         return false;
     }
     for (const ReplaySceneBlockDefinition &definition : scene.Blocks()) {
@@ -110,7 +119,8 @@ bool TerrainTopMarkers::BuildFromSceneDefinition(
         MarkOccupiedColumn(static_cast<int32_t>(coordinate.x),
                            static_cast<int32_t>(coordinate.z));
     }
-    if (!AddBaseMarkersForUnoccupiedColumns()) {
+    if (!AddBaseMarkersForUnoccupiedColumns(
+                decorationSize->defaultZoneHeight)) {
         Clear();
         return false;
     }
@@ -118,9 +128,14 @@ bool TerrainTopMarkers::BuildFromSceneDefinition(
 }
 
 bool TerrainTopMarkers::BuildFromFieldUnits(
+        const ReplaySceneDefinition &scene,
         const CGameCtnReplayMapInput &mapInput,
         const ChallengeFieldUnits &fieldUnits) {
-    if (!BeginMap(mapInput)) {
+    const auto &decorationSize = scene.DecorationSize();
+    if (!decorationSize ||
+        !ReplayDecorationSizeMatchesMap(
+                mapInput, decorationSize->mapSize) ||
+        !BeginMap(decorationSize->mapSize)) {
         return false;
     }
     for (const ChallengeFieldUnit &unit : fieldUnits.Units()) {
@@ -135,7 +150,8 @@ bool TerrainTopMarkers::BuildFromFieldUnits(
         }
         MarkOccupiedColumn(unit.position.x, unit.position.z);
     }
-    if (!AddBaseMarkersForUnoccupiedColumns()) {
+    if (!AddBaseMarkersForUnoccupiedColumns(
+                decorationSize->defaultZoneHeight)) {
         Clear();
         return false;
     }

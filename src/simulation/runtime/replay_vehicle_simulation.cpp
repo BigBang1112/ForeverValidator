@@ -188,7 +188,7 @@ ReplayVehiclePreparationResult ReplayVehicleSimulation::Start(
   car_.BindVehicleStruct(vehicleStruct_);
   materials_.Install(car_, vehicleDefinition.materials);
   turboSound_.Install(car_);
-  car_.UpdateParamsFromTuning();
+  car_.OnEnterScene();
   ApplyWheelMaterialFromTuning();
   body.InstallPhysicalParameters(body.CaptureDynaParameters());
   return ReplayVehiclePreparationResult::Ready;
@@ -226,7 +226,7 @@ bool ReplayVehicleSimulation::Respawn(ReplayVehicleBody &body) {
 
 std::optional<u32> ReplayVehicleSimulation::FinishTimeMs() const {
   const ReplayRaceProgress &progress = race_.Progress();
-  return progress.finishCount != 0u
+  return progress.raceCompleted
              ? std::optional<u32>(progress.lastPrepareTimeMs)
              : std::nullopt;
 }

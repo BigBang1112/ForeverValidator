@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "engine/game/replay_challenge_map_input.h"
+#include "format/replay/replay_challenge_metadata.h"
 #include "format/replay/replay_ghost_trajectory.h"
 #include "format/replay/replay_input_timeline.h"
 enum class ReplayFileReadError {
@@ -39,6 +40,26 @@ struct ReplayGhostArchiveMetadata {
     std::size_t encodedSampleByteCount = 0u;
 };
 
+enum class ReplayVersion : std::uint8_t {
+    TMr6,
+    TMr7,
+};
+
+enum class ReplayCompatibility : std::uint8_t {
+    Compatible,
+    Incompatible,
+};
+
+struct ReplayCompatibilityMetadata {
+    ReplayVersion replayVersion = ReplayVersion::TMr7;
+    ReplayVersion currentGameVersion = ReplayVersion::TMr7;
+    ReplayCompatibility compatibility = ReplayCompatibility::Compatible;
+
+    bool IsCompatible() const {
+        return compatibility == ReplayCompatibility::Compatible;
+    }
+};
+
 class ReplayFile {
 public:
     ReplayFile() = default;
@@ -63,6 +84,30 @@ public:
         return ghostArchiveMetadata_;
     }
 
+    const ReplayCompatibilityMetadata &CompatibilityMetadata() const {
+        return compatibilityMetadata_;
+    }
+
+    const ReplayChallengeMetadata &ChallengeMetadata() const {
+        return challengeMetadata_;
+    }
+
+    const ReplayArchiveIdentifier &VehicleIdentifier() const {
+        return vehicleIdentifier_;
+    }
+
+    bool HasValidationInput() const {
+        return hasValidationInput_;
+    }
+
+    ReplayMapEnvironment MapEnvironment() const {
+        return DecodeReplayMapEnvironment(mapInput_.DefaultCollectionName());
+    }
+
+    ReplayVehicleModel VehicleModel() const {
+        return DecodeReplayVehicleModel(vehicleIdentifier_.id);
+    }
+
 private:
     friend ReplayFileReadError ReadReplayBytes(
             const std::uint8_t *bytes,
@@ -71,23 +116,32 @@ private:
     friend ReplayFileReadError ParseReplayStorage(
             const std::vector<std::uint8_t> &fileStorage,
             ReplayFile *out);
-    friend ReplayFileReadError ParseReplayStorage(
-            const std::vector<std::uint8_t> &fileStorage,
-            ReplayFile *out);
 
     ReplayFile(ReplayInputTimeline inputTimeline,
                ReplayGhostTrajectory ghostTrajectory,
                ReplayGhostArchiveMetadata ghostArchiveMetadata,
-               CGameCtnReplayMapInput mapInput)
+               ReplayCompatibilityMetadata compatibilityMetadata,
+               CGameCtnReplayMapInput mapInput,
+               ReplayChallengeMetadata challengeMetadata,
+               ReplayArchiveIdentifier vehicleIdentifier,
+               bool hasValidationInput)
         : inputTimeline_(std::move(inputTimeline)),
           ghostTrajectory_(std::move(ghostTrajectory)),
           ghostArchiveMetadata_(ghostArchiveMetadata),
-          mapInput_(std::move(mapInput)) {}
+          compatibilityMetadata_(compatibilityMetadata),
+          mapInput_(std::move(mapInput)),
+          challengeMetadata_(std::move(challengeMetadata)),
+          vehicleIdentifier_(std::move(vehicleIdentifier)),
+          hasValidationInput_(hasValidationInput) {}
 
     ReplayInputTimeline inputTimeline_;
     ReplayGhostTrajectory ghostTrajectory_;
     ReplayGhostArchiveMetadata ghostArchiveMetadata_;
+    ReplayCompatibilityMetadata compatibilityMetadata_;
     CGameCtnReplayMapInput mapInput_;
+    ReplayChallengeMetadata challengeMetadata_;
+    ReplayArchiveIdentifier vehicleIdentifier_;
+    bool hasValidationInput_ = false;
 };
 
 ReplayFileReadError ReadReplayBytes(

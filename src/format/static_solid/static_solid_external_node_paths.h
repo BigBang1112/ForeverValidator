@@ -50,6 +50,12 @@ struct CGameCtnReplayStaticSolidExternalNodePathResolver {
             const CGameCtnReplayStaticSolidExternalNodeRef &nodeRef,
             int requirePresent,
             CGameCtnReplayStaticSolidExternalNodePathResult *resultOut);
+    static int BuildPlainPath(
+            const SceneDescriptorFolderPaths *folders,
+            const CPlugFilePack *pack,
+            const CGameCtnReplayStaticSolidExternalNodeRef &nodeRef,
+            int requirePresent,
+            CGameCtnReplayStaticSolidExternalNodePathResult *resultOut);
     static int ResolveSelectedPath(
             const SceneDescriptorFolderPaths *folders,
             const CPlugFilePack *pack,

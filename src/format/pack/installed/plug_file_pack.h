@@ -8,6 +8,14 @@
 
 #include "format/pack/installed/byte_buffer.h"
 #include "engine/core/engine_types.h"
+
+class InstalledPackKeyCatalog;
+
+int CommitArchiveFeedbackExtraction(
+        ByteBuffer &&decoded,
+        int readerError,
+        ByteBuffer *out);
+
 struct CPlugFilePackFolderDesc {
     u32 parent = 0xffffffffu;
     std::string name;
@@ -68,12 +76,25 @@ public:
     CPlugFilePack(const CPlugFilePack &) = delete;
     CPlugFilePack &operator=(const CPlugFilePack &) = delete;
     int IsCrypted(void) const;
+    const std::string &PackName(void) const;
+    static int ComputeKey(const char *keyString, SNat128 &keyOut);
     int LoadHeadersFromMemory();
     int OpenFromMemory(
             const void *pakBytes,
             std::size_t pakByteCount,
             const void *packlistBytes,
             std::size_t packlistByteCount);
+    int OpenFromMemory(
+            const void *pakBytes,
+            std::size_t pakByteCount,
+            const void *packlistBytes,
+            std::size_t packlistByteCount,
+            const char *packName);
+    int OpenFromMemory(
+            const void *pakBytes,
+            std::size_t pakByteCount,
+            const InstalledPackKeyCatalog &keyCatalog,
+            const char *packName);
     void FreeLoadedPack();
     int FolderPathRecursive(
             u32 folderIndex, char *out, std::size_t outSize) const;
@@ -91,6 +112,15 @@ public:
             char *out,
             std::size_t outSize) const;
     int ExtractPath(const char *selectedPath, ByteBuffer *out) const;
+    int ExtractPathWithStreamFeedbackStrict(
+            const char *selectedPath,
+            ByteBuffer *out) const;
+    int ExtractReferenceTablePrefix(
+            const char *selectedPath,
+            ByteBuffer *out) const;
+
+private:
+    std::string packName_;
 };
 
 #endif

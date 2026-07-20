@@ -1,13 +1,42 @@
 #include "format/static_solid/static_solid_archive_payload_decoder.h"
 #include <stddef.h>
 
+#include "format/archive/tmnf_gbx_body_reader.h"
 #include "format/pack/installed/plug_file_pack.h"
 #include "format/static_solid/static_solid_archive_payload_bytes.h"
 #include "format/static_solid/static_solid_archive_payload_stream.h"
+
+namespace {
+
+int RequiredPayloadHasValidReferencePrefix(
+        const SNat128 &key,
+        const StaticSolidArchivePayload &payload,
+        StaticSolidArchiveRawBytes rawPayload) {
+    CGameCtnReplayStaticSolidDecodedPayload prefix;
+    const int decoded = payload.IsEncrypted()
+            ? CGameCtnReplayStaticSolidArchivePayloadReader::
+                      DecodeReferenceTablePrefixWithStreamFeedback(
+                              key, payload, rawPayload, &prefix)
+            : CGameCtnReplayStaticSolidRawPayloadDecoder::Decode(
+                      key, payload, rawPayload, &prefix);
+    u32 classId = 0u;
+    GbxBodyReferenceTable references;
+    return decoded && prefix.IsReady() &&
+           GbxBodyOffsetReader::TryParseWithReferences(
+                   prefix.Bytes(),
+                   prefix.ByteCount(),
+                   &classId,
+                   &references) &&
+           classId == payload.DescriptorClassId();
+}
+
+}  // namespace
+
 int StaticSolidArchiveLoadSession::DecodeAndAppendArchive(
         StaticSolidArchivePayload payloadAsset,
         CGameCtnReplayArchiveStaticModelCollection *archiveModels,
-        CGameCtnReplayStaticSolidDescriptorDependencyQueue *dependencyQueue) {
+        CGameCtnReplayStaticSolidDescriptorDependencyQueue *dependencyQueue,
+        int required) {
     if (dependencyQueue == nullptr) {
         return 0;
     }
@@ -53,7 +82,7 @@ int StaticSolidArchiveLoadSession::DecodeAndAppendArchive(
         }
         CGameCtnReplayStaticSolidArchiveDecodeStats stats;
         const StaticSolidArchiveRollback checkpoint =
-                MarkDecodedArchiveTail();
+                MarkDecodedArchiveTail(archiveModels);
         const StaticSolidArchiveId payload =
                 StaticSolidArchiveId::
                         FromIndex(static_cast<u32>(payloads.size()));
@@ -65,7 +94,7 @@ int StaticSolidArchiveLoadSession::DecodeAndAppendArchive(
                     archiveModels,
                     payload,
                     &stats)) {
-            if (!RestoreDecodedArchiveTail(checkpoint)) {
+            if (!RestoreDecodedArchiveTail(checkpoint, archiveModels)) {
                 return 0;
             }
             decodedPayload.Clear();
@@ -76,7 +105,7 @@ int StaticSolidArchiveLoadSession::DecodeAndAppendArchive(
         payloadAsset.IsEncrypted()) {
         CGameCtnReplayStaticSolidArchiveDecodeStats stats;
         const StaticSolidArchiveRollback checkpoint =
-                MarkDecodedArchiveTail();
+                MarkDecodedArchiveTail(archiveModels);
         const StaticSolidArchiveId payload =
                 StaticSolidArchiveId::
                         FromIndex(static_cast<u32>(payloads.size()));
@@ -98,7 +127,7 @@ int StaticSolidArchiveLoadSession::DecodeAndAppendArchive(
                         dependencyQueue)) {
                 return 0;
             }
-        } else if (!RestoreDecodedArchiveTail(checkpoint)) {
+        } else if (!RestoreDecodedArchiveTail(checkpoint, archiveModels)) {
             return 0;
         }
     }
@@ -109,6 +138,11 @@ int StaticSolidArchiveLoadSession::DecodeAndAppendArchive(
             return 0;
         }
     } else {
+        if (required &&
+            !RequiredPayloadHasValidReferencePrefix(
+                    *packKey, payloadAsset, rawPayload)) {
+            return 0;
+        }
         payloadAsset.MarkDecodeUnavailable();
     }
     decodedPayload.Clear();

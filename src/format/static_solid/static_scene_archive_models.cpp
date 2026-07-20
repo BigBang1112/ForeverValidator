@@ -5,6 +5,7 @@
 #include "engine/game/game_ctn_block_info.h"
 #include "format/pack/block_info_catalog/installed_pack_asset_repository.h"
 #include "format/pack/block_info_catalog/installed_pack_asset_repository_internal.h"
+#include "format/pack/installed/plug_file_pack.h"
 #include "format/pack/installed/scene_descriptor_folder_paths.h"
 #include "format/static_solid/static_solid_archive_reference.h"
 #include "format/static_solid/static_solid_descriptor_dependency_queue.h"
@@ -66,7 +67,8 @@ int StaticSceneArchiveModelRecord::ConfigureFromSceneObject(
         const float sceneIso[12],
         u32 treeNodeIndex,
         const char *sceneObjectId,
-        const char *selectedDescriptorPath) {
+        const char *selectedDescriptorPath,
+        const CHmsItem::Properties *itemProperties) {
     if (sceneIso == nullptr || selectedDescriptorPath == nullptr ||
         selectedDescriptorPath[0] == '\0') {
         return 0;
@@ -74,6 +76,11 @@ int StaticSceneArchiveModelRecord::ConfigureFromSceneObject(
     model.worldIso_ = GmWire::DecodeIso4(sceneIso);
     source.selectedDescriptorPath = selectedDescriptorPath;
     source.sceneObjectId = sceneObjectId != nullptr ? sceneObjectId : "";
+    if (itemProperties != nullptr) {
+        model.itemProperties_ = *itemProperties;
+    } else {
+        model.itemProperties_.reset();
+    }
     if (treeNodeIndex != UINT32_MAX) {
         source.treeNodeIndex = treeNodeIndex;
     }
@@ -88,6 +95,14 @@ u32 CGameCtnReplayArchiveStaticModelCollection::Count() const {
     return records.size() <= UINT32_MAX
             ? static_cast<u32>(records.size())
             : UINT32_MAX;
+}
+
+int CGameCtnReplayArchiveStaticModelCollection::ResizePrefix(u32 count) {
+    if (count > records.size()) {
+        return 0;
+    }
+    records.resize(count);
+    return 1;
 }
 
 int CGameCtnReplayArchiveStaticModelCollection::
@@ -140,11 +155,20 @@ bool CGameCtnReplayArchiveStaticModelCollection::HasDescriptor(
 
 bool LoadCatalogArchiveStaticModels(
         InstalledPackAssetRepository &assets,
-        CGameCtnReplayArchiveStaticModelCollection &archiveModels) {
+        CGameCtnReplayArchiveStaticModelCollection &archiveModels,
+        CatalogArchiveStaticModelUsage usage) {
     static constexpr const char *BlockName = "StadiumCircuitBase";
     static constexpr const char *CollectionName = "Stadium";
 
     archiveModels.Free();
+    const CPlugFilePack *pack =
+            InstalledPackAssetRepositoryAccess::Pack(assets);
+    if (pack == nullptr) {
+        return false;
+    }
+    if (pack->PackName() != CollectionName) {
+        return true;
+    }
     const BlockInfoCatalog *catalog = assets.Catalog();
     const BlockInfoCatalogEntry *entry = catalog != nullptr
             ? catalog->FindForIdentifierAndCollection(BlockName,
@@ -162,12 +186,14 @@ bool LoadCatalogArchiveStaticModels(
         if (mobil.Get() == nullptr ||
             !references.IsLoadable(
                     mobil->StaticSolidAsset()) ||
-            !SceneDescriptorFolderPaths::IsStadiumMediaSolidPath(
+            !SceneDescriptorFolderPaths::IsMediaSolidPath(
                     references.PlainPackPath(
                             mobil->StaticSolidAsset()).c_str())) {
             continue;
         }
         StaticSceneArchiveModelRecord record;
+        record.dependencyOnly =
+                usage == CatalogArchiveStaticModelUsage::DependencyOnly;
         if (!record.ConfigureFromBlockInfoMobil(
                     BlockName, blockInfo, mobil.Get(), references) ||
             !archiveModels.AppendIfDescriptorMissing(record)) {

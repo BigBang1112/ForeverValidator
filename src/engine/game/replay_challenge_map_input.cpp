@@ -154,3 +154,29 @@ const CGameCtnReplayMapIdentifier &
 CGameCtnReplayMapInput::DecorationAuthor() const {
     return decorationAuthor;
 }
+
+bool ReplayMapAuthoredCoordinatesFit(
+        const CGameCtnReplayMapInput &mapInput,
+        const GmNat3 &mapSize) {
+    if (mapSize.x == 0u || mapSize.y == 0u || mapSize.z == 0u) {
+        return false;
+    }
+    for (const CGameCtnReplayMapInputBlock &block : mapInput.Blocks()) {
+        const GmNat3 &coordinate = block.Coordinate();
+        if (coordinate.x >= mapSize.x || coordinate.y >= mapSize.y ||
+            coordinate.z >= mapSize.z) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool ReplayDecorationSizeMatchesMap(
+        const CGameCtnReplayMapInput &mapInput,
+        const GmNat3 &decorationSize) {
+    const GmNat3 &serializedSize = mapInput.Size();
+    return (serializedSize.x == decorationSize.x &&
+            serializedSize.y == decorationSize.y &&
+            serializedSize.z == decorationSize.z) ||
+           ReplayMapAuthoredCoordinatesFit(mapInput, decorationSize);
+}

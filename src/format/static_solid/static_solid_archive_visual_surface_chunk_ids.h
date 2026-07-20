@@ -52,6 +52,15 @@ enum class CPlugVisual3DArchiveChunkId : u32 {
     FaceStream = 0x0902c004u,
 };
 
+enum class CPlugVisualSpriteArchiveChunkId : u32 {
+    SpriteParameters = 0x09010005u,
+    AtlasGrid = 0x09010006u,
+};
+
+enum class CPlugVisualGridArchiveChunkId : u32 {
+    Root = TMNF_CLASS_CPlugVisualGrid,
+};
+
 enum class CPlugVisualIndexedArchiveChunkId : u32 {
     Root = TMNF_CLASS_CPlugVisualIndexed,
     IndexBuffer = 0x0906a001u,
@@ -83,6 +92,14 @@ constexpr u32 ArchiveChunkIdValue(CPlugVisualArchiveChunkId chunkId) {
 }
 
 constexpr u32 ArchiveChunkIdValue(CPlugVisual3DArchiveChunkId chunkId) {
+    return static_cast<u32>(chunkId);
+}
+
+constexpr u32 ArchiveChunkIdValue(CPlugVisualSpriteArchiveChunkId chunkId) {
+    return static_cast<u32>(chunkId);
+}
+
+constexpr u32 ArchiveChunkIdValue(CPlugVisualGridArchiveChunkId chunkId) {
     return static_cast<u32>(chunkId);
 }
 
@@ -159,6 +176,18 @@ constexpr int IsCPlugVisual3DInfo1Chunk(u32 chunkId) {
 constexpr int IsCPlugVisual3DInfo3Chunk(u32 chunkId) {
     return chunkId == ArchiveChunkIdValue(CPlugVisual3DArchiveChunkId::MaterialRef) ||
            chunkId == ArchiveChunkIdValue(CPlugVisual3DArchiveChunkId::FaceStream);
+}
+
+constexpr int IsCPlugVisualSpriteInfo3Chunk(u32 chunkId) {
+    return chunkId ==
+                   ArchiveChunkIdValue(CPlugVisualSpriteArchiveChunkId::SpriteParameters) ||
+           chunkId ==
+                   ArchiveChunkIdValue(CPlugVisualSpriteArchiveChunkId::AtlasGrid);
+}
+
+constexpr int IsCPlugVisualGridInfo3Chunk(u32 chunkId) {
+    return chunkId ==
+           ArchiveChunkIdValue(CPlugVisualGridArchiveChunkId::Root);
 }
 
 constexpr int IsCPlugVisualIndexedTrianglesInfo1Chunk(u32 chunkId) {

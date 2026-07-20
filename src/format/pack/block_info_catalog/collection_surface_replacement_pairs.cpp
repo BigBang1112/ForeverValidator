@@ -238,6 +238,11 @@ int CollectionReplacementPairs::Contains(
     return 0;
 }
 
+const std::vector<CollectionReplacementPair> &
+CollectionReplacementPairs::Pairs() const {
+    return pairs;
+}
+
 u32 CollectionReplacementPairs::OverflowCount() const {
     return overflowCount;
 }

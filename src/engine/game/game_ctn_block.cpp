@@ -15,10 +15,45 @@
 #include "engine/resources/system_fid_parameter_types.h"
 #include "engine/resources/system_fid_parameters.h"
 #include "engine/core/binary32_math.h"
+#include "format/archive/archive_class_ids.h"
 namespace {
 
 float NaturalAsFloat(u32 value) {
     return Binary32::FromUnsignedInteger(value);
+}
+
+void BuildMobilLocation(
+        GmIso4 &out,
+        const GmNat3 &coord,
+        ECardinalDir direction,
+        const GmNat3 &size,
+        float squareSize,
+        float squareHeight) {
+    GmMat3 rotation{};
+    out.translation.x = NaturalAsFloat(coord.x) * squareSize;
+    out.translation.y = NaturalAsFloat(coord.y) * squareHeight;
+    out.translation.z = NaturalAsFloat(coord.z) * squareSize;
+
+    unsigned long quarterTurn = 0u;
+    switch (direction) {
+    case ECardinalDir::North:
+        break;
+    case ECardinalDir::West:
+        out.translation.x += NaturalAsFloat(size.z) * squareSize;
+        quarterTurn = 3u;
+        break;
+    case ECardinalDir::South:
+        out.translation.x += NaturalAsFloat(size.x) * squareSize;
+        out.translation.z += NaturalAsFloat(size.z) * squareSize;
+        quarterTurn = 2u;
+        break;
+    case ECardinalDir::East:
+        out.translation.z += NaturalAsFloat(size.x) * squareSize;
+        quarterTurn = 1u;
+        break;
+    }
+    rotation.SetRotateQuarterY(quarterTurn);
+    out.rotation = rotation;
 }
 
 }  // namespace
@@ -55,6 +90,16 @@ CGameCtnBlock::SubMobils(void) const {
 const std::array<CMwNodRef<CSceneMobil>, 4> &
 CGameCtnBlock::ClipSourceMobils(void) const {
     return clipSourceMobils;
+}
+
+const std::array<CMwNodRef<CSceneMobil>, 4> &
+CGameCtnBlock::ClipHelperSourceMobils(void) const {
+    return clipHelperSourceMobils;
+}
+
+const std::array<CMwNodRef<CSceneMobil>, 4> &
+CGameCtnBlock::ReplayLoadedClipSourceMobils(void) const {
+    return replayLoadedClipSourceMobils;
 }
 
 const std::vector<std::unique_ptr<CGameCtnBlockUnit>> &
@@ -99,31 +144,8 @@ void CGameCtnBlock::GetMobilLoc(
         const GmNat3 &coord,
         ECardinalDir direction,
         const GmNat3 &size) {
-    GmMat3 rotation{};
-    out.translation.x = NaturalAsFloat(coord.x) * SquareSize;
-    out.translation.y = NaturalAsFloat(coord.y) * SquareHeight;
-    out.translation.z = NaturalAsFloat(coord.z) * SquareSize;
-
-    unsigned long quarterTurn = 0u;
-    switch (direction) {
-    case ECardinalDir::North:
-        break;
-    case ECardinalDir::West:
-        out.translation.x += NaturalAsFloat(size.z) * SquareSize;
-        quarterTurn = 3u;
-        break;
-    case ECardinalDir::South:
-        out.translation.x += NaturalAsFloat(size.x) * SquareSize;
-        out.translation.z += NaturalAsFloat(size.z) * SquareSize;
-        quarterTurn = 2u;
-        break;
-    case ECardinalDir::East:
-        out.translation.z += NaturalAsFloat(size.x) * SquareSize;
-        quarterTurn = 1u;
-        break;
-    }
-    rotation.SetRotateQuarterY(quarterTurn);
-    out.rotation = rotation;
+    BuildMobilLocation(
+            out, coord, direction, size, SquareSize, SquareHeight);
 }
 
 void CGameCtnBlock::GetMobilLoc(GmIso4 &out) {
@@ -136,10 +158,13 @@ GmIso4 CGameCtnBlock::MobilLocation(void) const {
         location.SetIdentity();
         return location;
     }
-    GetMobilLoc(location,
-                coord,
-                direction,
-                blockInfo->SizeForMobilFamily(UsesGroundMobilSize()));
+    BuildMobilLocation(
+            location,
+            coord,
+            direction,
+            blockInfo->SizeForMobilFamily(UsesGroundMobilSize()),
+            collectionSquareSize_,
+            collectionSquareHeight_);
     location.translation.y += mobilVerticalOffset_;
     return location;
 }
@@ -287,8 +312,33 @@ void CGameCtnBlock::SetClipSourceMobils(
     clipSourceMobils = mobils;
 }
 
+void CGameCtnBlock::SetClipHelperSourceMobils(
+        const std::array<CMwNodRef<CSceneMobil>, 4> &mobils) {
+    clipHelperSourceMobils = mobils;
+}
+
+void CGameCtnBlock::SetReplayLoadedClipSourceMobils(
+        const std::array<CMwNodRef<CSceneMobil>, 4> &mobils) {
+    replayLoadedClipSourceMobils = mobils;
+}
+
 void CGameCtnBlock::SetTerrainModifiedId(const CMwId &id) {
     terrainModifiedId = id;
+}
+
+void CGameCtnBlock::SetCollectionGrid(
+        float squareSize,
+        float squareHeight) {
+    collectionSquareSize_ = squareSize;
+    collectionSquareHeight_ = squareHeight;
+}
+
+float CGameCtnBlock::CollectionSquareSize(void) const {
+    return collectionSquareSize_;
+}
+
+float CGameCtnBlock::CollectionSquareHeight(void) const {
+    return collectionSquareHeight_;
 }
 
 CMwId CGameCtnBlock::GetTerrainModifiedId(void) {
@@ -346,6 +396,8 @@ CGameCtnBlock::CGameCtnBlock(CGameCtnBlock *source)
     direction = source->direction;
     placement_ = source->placement_;
     clipSourceMobils = source->clipSourceMobils;
+    clipHelperSourceMobils = source->clipHelperSourceMobils;
+    replayLoadedClipSourceMobils = source->replayLoadedClipSourceMobils;
     sourceAsset_ = source->sourceAsset_;
     origin_ = source->origin_;
     replacementMaterialRemap_ = source->replacementMaterialRemap_;
@@ -353,6 +405,8 @@ CGameCtnBlock::CGameCtnBlock(CGameCtnBlock *source)
     suppressingBlock_ = source->suppressingBlock_;
     instanceId_ = source->instanceId_;
     mobilVerticalOffset_ = source->mobilVerticalOffset_;
+    collectionSquareSize_ = source->collectionSquareSize_;
+    collectionSquareHeight_ = source->collectionSquareHeight_;
 
     // Terrain-modifier and mobil state are generated again for the copy.
     terrainModifiedId.SetInvalid();
@@ -481,7 +535,11 @@ void CGameCtnBlock::ApplySkin(void) {
         CPlugShader *shader =
                 shaderIterator.GetNextShader(&shaderTree);
         CPlugBitmapRenderScene3d *sceneRender =
-                shader->FindScene3dBitmapRender(nullptr, nullptr);
+                dynamic_cast<CPlugBitmapRenderScene3d *>(
+                        shader->FindBitmapRenderByClassId(
+                                TMNF_CLASS_CPlugBitmapRenderScene3d,
+                                nullptr,
+                                nullptr));
         if (sceneRender == nullptr) {
             continue;
         }

@@ -22,7 +22,8 @@ struct StaticSolidArchiveVisualReader {
     static int ParseVisual3dFaceStream(
             CGameCtnReplayStaticSolidArchiveByteStream *byteStream,
             StaticSolidArchiveVisualState *state,
-            StaticSolidArchiveLoadSession *store);
+            StaticSolidArchiveLoadSession *store,
+            u32 classId);
 
     static int ParseVisualIndexBuffer(
             CGameCtnReplayStaticSolidArchiveByteStream *byteStream,

@@ -22,6 +22,18 @@ struct LinkedAsset {
     std::shared_ptr<StaticSolidAsset> asset;
 };
 
+void RootDecodedStaticTree(CPlugTree *tree) {
+    if (tree == nullptr) {
+        return;
+    }
+    tree->SetIsRooted(1);
+    // Serialized roots can contain rooted parents with unrooted source children.
+    const u32 childCount = static_cast<u32>(tree->GetChildCount());
+    for (u32 childIndex = 0u; childIndex < childCount; childIndex++) {
+        RootDecodedStaticTree(tree->GetChild(childIndex));
+    }
+}
+
 template <typename Prepare>
 CMwNodRef<CPlugSolid> BuildPrototypeSolid(
         CPlugTree *sourceRoot,
@@ -66,6 +78,8 @@ bool BuildAssets(
         auto asset = std::make_shared<StaticSolidAsset>();
         CPlugTree *sourceRoot = archive.CollisionRoot(payload);
         const auto *physical = archive.Physics(payload);
+        // Decoded descendants are source geometry, not volatile model children.
+        RootDecodedStaticTree(sourceRoot);
 
         CMwNodRef<CPlugSolid> base =
                 (BuildPrototypeSolid(
@@ -205,8 +219,12 @@ bool AddArchiveSceneModels(
         const CGameCtnReplayArchiveStaticModelCollection &archiveModels,
         StaticSceneModelCollection &models) {
     bool ok = models.Reserve(archiveModels.Count());
-    archiveModels.ForEachModel(
-            [&](const CGameCtnReplayArchiveStaticModel &source) {
+    archiveModels.ForEachRecord(
+            [&](const StaticSceneArchiveModelRecord &record) {
+        if (record.dependencyOnly) {
+            return 1;
+        }
+        const CGameCtnReplayArchiveStaticModel &source = record.model;
         if (!source.Prototype().IsValid()) {
             models.MarkIncomplete();
             return 1;
@@ -239,8 +257,12 @@ bool LinkStaticSceneAssets(
         return false;
     }
     for (const ReplaySceneBlockPlacement &placement :
-         placements.Placements()) {
+         placements.CollisionPlacements()) {
         BindBlock(&placement.Block(), assets, references);
+    }
+    for (const ReplayScenePylonPlacement &placement :
+         placements.PylonPlacements()) {
+        BindMobil(&placement.Mobil(), assets, references);
     }
     return BindArchiveModels(archiveModels, assets, archive);
 }

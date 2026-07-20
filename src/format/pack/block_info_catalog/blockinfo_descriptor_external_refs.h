@@ -42,7 +42,10 @@ public:
     int ParseGbx(const unsigned char *bytes, u32 byteCount);
 
     void AttachInstalledPack(const CPlugFilePack *pack);
+    int AttachInstalledPackRelativeTo(const CPlugFilePack *pack,
+                                      const char *parentPlainPath);
     const CPlugFilePack *InstalledPack() const;
+    u32 ClassId() const;
     u32 BodyOffsetForFormatParser() const;
     u32 NodeCountForFormatBounds() const;
     const std::vector<BlockInfoDescriptorExternalRef> &References() const;
@@ -69,6 +72,7 @@ public:
 private:
     SceneDescriptorFolderPaths folders{};
     const CPlugFilePack *installedPack = nullptr;
+    char installedPathRoot[64]{};
     std::vector<BlockInfoDescriptorExternalRef> references;
     u32 nodeCount = 0u;
     u32 bodyOffset = 0u;

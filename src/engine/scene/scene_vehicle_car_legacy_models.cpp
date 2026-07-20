@@ -1002,7 +1002,7 @@ void CSceneVehicleCar::ApplyModel6GroundForces(
 
   TryEnterForwardBurnout(
       &tuning, request.linearSpeed, request.visualSteerYaw, state.frameY,
-      state.tick, state.waterActive, request.hasGroundMaterial);
+      state.tick, request.hasGroundMaterial);
   UpdateGearDirection(request.linearSpeed);
 
   float rolloverInput =

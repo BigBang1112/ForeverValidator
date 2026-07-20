@@ -13,6 +13,8 @@ enum class StaticScenePurpose {
     Clip,
     Helper,
     CheckpointTrigger,
+    DedicatedInitialCollision,
+    Pylon,
 };
 
 class StaticSceneModel {

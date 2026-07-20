@@ -1,112 +1,159 @@
 # ForeverValidator
 
-ForeverValidator is a deterministic C++17 validator for TrackMania Nations
-Forever Stadium replays.
-It decodes the replay and embedded challenge, loads the original Stadium
-assets, and reruns the recorded inputs through reconstructed game physics.
+ForeverValidator is a deterministic C++17 replay validator for TrackMania
+United Forever. It decodes a replay and its embedded challenge, loads the
+original installed game assets, and reruns the recorded inputs through
+reconstructed game physics.
 
-## Scope and result
+## Supported United content
 
-For replays with version-9 fixed-step car state, the validator compares
-simulated positions with the recorded ghost trajectory. It also validates race
-completion, finish time, and respawns.
+The validator supports the seven vanilla map environments and vehicles:
 
-TMNF validation replays may intentionally contain no ghost-state samples (the
-replays specifically exported for validation). They still run the complete map
-and vehicle simulation. Because no trajectory is stored, their finish and
-respawn result is resolved from the canonical recorded validation events after
-the physics run; no position comparison is claimed.
+| Map environment | Vehicle |
+| --- | --- |
+| Alpine / Snow | SnowCar |
+| Speed / Desert | DesertCar |
+| Rally | RallyCar |
+| Island | IslandCar |
+| Coast | CoastCar |
+| Bay | BayCar |
+| Stadium | StadiumCar |
 
-`valid` means every check available for that replay form passed. `invalid` means
-simulation completed but the applicable result did not match. `error` means the
-replay, assets, map, or simulation could not be processed.
+All 49 vanilla map-environment and vehicle combinations are routed from the
+identifiers embedded in the replay. TMUnlimiter environments, custom vehicles,
+and custom physics are outside the supported scope.
 
-Supported input is currently limited to TMNF Stadium car replays with an
-embedded challenge and input stream, using either version-9 fixed-step car
-state or the canonical empty state used by validation replays.
+Race, Platform, Puzzle, and Stunts replays are supported. Shortcut and
+multilap challenges use Race completion and checkpoint semantics. Race,
+Platform, and Puzzle validate completion, time, and respawns where recorded.
+Stunts validates completion, respawns, and the independently simulated stunt
+score.
 
-## Quick start
+## Game files
 
-Dependencies: a C++17 compiler, GNU Make, zlib, and OpenSSL libcrypto. The
-bundled command-line frontend targets POSIX systems; the core validation
-library remains independent of native filesystem access.
+ForeverValidator requires the `Packs` directory from a complete TrackMania
+United Forever installation. A TrackMania Nations Forever installation is not
+sufficient: it does not contain the six non-Stadium environments or their
+vehicles.
+
+The directory must contain `packlist.dat` and the installed United packs,
+including Alpine, Speed, Rally, Island, Coast, Bay, Stadium, Game, and Resource.
+
+## Linux build
+
+Dependencies are GNU Make, a C++17 compiler, zlib development files, and
+OpenSSL libcrypto development files.
 
 ```sh
 make -j"$(nproc)"
+```
 
-build/forevervalidator \
-  --pak-dir "/path/to/TmNationsForever/Packs" \
+This creates:
+
+```text
+build/native/forevervalidator
+build/native/libforevervalidator_core.a
+build/native/libforevervalidator_json.a
+build/native/libforevervalidator_native.a
+```
+
+## Windows build
+
+### From Linux
+
+The reproducible cross-build requires a MinGW-w64 C++ toolchain, `curl`,
+`perl`, `tar`, and `sha256sum`:
+
+```sh
+JOBS="$(nproc)" make -j"$(nproc)" windows
+```
+
+The build downloads the pinned OpenSSL 3.5.7 and zlib 1.3.2 source archives,
+verifies their SHA-256 checksums, builds static Windows libraries, and creates
+`build/windows/forevervalidator.exe`. The executable does not depend on MinGW
+runtime DLLs.
+
+### On Windows
+
+Windows users can download a ready-to-run 64-bit executable from the
+[GitHub releases](https://github.com/Skycrafter-dev/ForeverValidator/releases);
+building from source is optional.
+
+To build from source, open PowerShell in the repository and run:
+
+```powershell
+.\build-windows.bat
+```
+
+The script downloads and verifies pinned portable build tools and dependency
+sources, then creates `dist\forevervalidator.exe`. Downloads and compiled
+dependencies are cached for later builds. The first build requires an internet
+connection, but no administrator privileges, package manager, preinstalled
+compiler, or manual `PATH` changes.
+
+## Command line
+
+Validate one replay and write its JSON report to standard output:
+
+```sh
+build/native/forevervalidator \
+  --pak-dir "/path/to/TmUnitedForever/Packs" \
   "/path/to/run.Replay.Gbx"
 ```
 
-The pack directory must contain `packlist.dat` and `Stadium.pak`; current
-support is limited to TMNF. Use `--out` to write one JSON result, or validate
-a directory recursively with `--out-dir`:
+Use `--out` for one output file, or validate files and directories in a batch
+with `--out-dir`:
 
 ```sh
-build/forevervalidator \
-  --pak-dir "/path/to/TmNationsForever/Packs" \
-  --out-dir /tmp/tmnf-results \
+build/native/forevervalidator \
+  --pak-dir "/path/to/TmUnitedForever/Packs" \
+  --out-dir /tmp/validation-results \
   "/path/to/replays"
 ```
 
+A single replay returns exit status 0 for valid, 1 for invalid, and a distinct
+nonzero error code when replay decoding, asset loading, or simulation cannot
+be completed. JSON includes typed map environment, vehicle, play mode,
+expected and observed outcomes, trajectory counts, maximum deviation, and the
+first divergence when present.
+
 ## Library API
 
-The backend is usable without the CLI or native filesystem:
+The public API separates portable validation from native file access:
 
 ```cpp
+#include <forevervalidator/native.h>
 #include <forevervalidator/validation.h>
 
 #include <utility>
 
 using namespace forevervalidator;
 
-Result<ValidationReport> validateFromMemory(
-    AssetBytes replayBytes,
-    AssetBytes packlistBytes,
-    AssetBytes stadiumBytes) {
-    AssetProvider provider = [
-        packlist = std::move(packlistBytes),
-        stadium = std::move(stadiumBytes)
-    ](const AssetRequest &request) -> Result<AssetBytes> {
-        if (request.logicalIdentifier == "packlist.dat") {
-            return Result<AssetBytes>::Success(packlist);
-        }
-        if (request.logicalIdentifier == "Stadium.pak") {
-            return Result<AssetBytes>::Success(stadium);
-        }
-
-        ValidationError error;
-        error.category = ValidationErrorCategory::Asset;
-        error.code = ValidationErrorCode::AssetLoadingFailed;
-        error.stage = ValidationStage::AssetLoading;
-        error.reason = ValidationFailureReason::RequiredAssetMissing;
-        error.relatedAsset = request.logicalIdentifier;
-        return Result<AssetBytes>::Failure(std::move(error));
-    };
-
-    auto source = CreateAssetSource(std::move(provider));
+void validateOneReplay() {
+    auto source = OpenInstalledPackDirectory(
+        "/path/to/TmUnitedForever/Packs");
     if (!source) {
-        return Result<ValidationReport>::Failure(
-            std::move(source).Error());
+        return; // Inspect source.Error().
     }
 
     auto context = CreateValidationContext(std::move(source).Value());
-    if (!context) {
-        return Result<ValidationReport>::Failure(
-            std::move(context).Error());
+    auto replay = ReadNativeReplayFile(
+        "run.Replay.Gbx", {"run.Replay.Gbx"});
+    if (!context || !replay) {
+        return;
     }
 
-    return ValidateReplay(
+    auto report = ValidateReplay(
         context.Value(),
-        {replayBytes.data(), replayBytes.size()},
+        {replay.Value().data(), replay.Value().size()},
         {"run.Replay.Gbx"});
 }
 ```
 
-The caller loads the replay and both pack files into `AssetBytes`. Every public
-operation returns a typed `Result<T>`; check it before accessing `Value()` and
-propagate or inspect `Error()` on failure.
+Applications can instead provide assets from memory with `AssetProvider` and
+`CreateAssetSource`. A validation context lazily caches pack and vehicle data,
+so it can be reused for replays from different United environments. Every
+public operation returns a typed `Result<T>`.
 
 ```text
 libforevervalidator_core.a    portable validation backend
@@ -121,12 +168,13 @@ forevervalidator              command-line frontend
 include/forevervalidator  public API
 src/app/cli               command-line frontend
 src/validation            validation and JSON output
-src/simulation            controls and persistent simulation runtime
+src/simulation            controls and deterministic simulation runtime
 src/engine                reconstructed game physics and scene code
 src/format                replay, GBX, pack, tuning, and solid decoding
-src/platform/native       native filesystem and process integration
+src/platform/native       native filesystem and pack-directory integration
 ```
 
-## Development Notes & Acknowledgements
+## Acknowledgements
 
-A significant portion of the tedious work (like mapping out the complex data structures and boilerplate code) was accelerated using LLMs. Think of it as a heavily assisted solo project.
+Reverse engineering, implementation, and repetitive structure mapping were
+accelerated with LLM assistance.

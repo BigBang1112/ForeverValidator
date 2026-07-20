@@ -1,6 +1,8 @@
 #include "format/static_solid/static_solid_archive_scene_reader.h"
 #include "format/static_solid/static_solid_archive_chunk_dispatcher.h"
 #include "format/static_solid/static_solid_archive_scene_payloads.h"
+#include "format/static_solid/static_solid_archive_scene_traffic_graph_reader.h"
+#include "format/archive/scene_object_archive_chunk_ids.h"
 #include "format/archive/tmnf_archive_ids.h"
 int CGameCtnReplayStaticSolidArchiveSceneReader::ParseSceneChunk(
     const CGameCtnReplayStaticSolidArchiveChunkDispatchContext &context,
@@ -27,7 +29,14 @@ int CGameCtnReplayStaticSolidArchiveSceneReader::ParseSceneChunk(
   if (classId == TMNF_CLASS_CScenePoc || classId == TMNF_CLASS_CSceneLight ||
       classId == TMNF_CLASS_CSceneSoundSource ||
       classId == TMNF_CLASS_CSceneMobil ||
+      classId == TMNF_CLASS_CSceneMobilLeaves ||
       classId == TMNF_CLASS_CSceneVehicleCar) {
+    if (classId == TMNF_CLASS_CSceneMobilLeaves &&
+        (IsCSceneMobilLeavesInfo1Chunk(chunkId) ||
+         IsCSceneMobilLeavesInfo3Chunk(chunkId))) {
+      CSceneMobilLeavesArchivePayload leavesPayload(context.nodeRefs);
+      return leavesPayload.Chunk(context.byteStream, chunkId);
+    }
     CSceneObjectOrMobilArchivePayload objectPayload(sceneContext);
     return objectPayload.Read(context.byteStream, chunkId);
   }
@@ -38,6 +47,12 @@ int CGameCtnReplayStaticSolidArchiveSceneReader::ParseSceneChunk(
   if (classId == TMNF_CLASS_CSceneObjectLink) {
     CSceneObjectLinkArchivePayload linkPayload(sceneContext);
     return linkPayload.Read(context.byteStream, chunkId);
+  }
+  if (classId == TMNF_CLASS_CSceneTrafficGraph) {
+    CSceneTrafficGraphArchivePayload trafficGraphPayload(
+        context.cmwIdState, context.nodeRefs, context.trafficGraphState,
+        context.currentArchiveNode);
+    return trafficGraphPayload.Chunk(context.byteStream, chunkId);
   }
   return 0;
 }

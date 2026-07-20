@@ -32,6 +32,7 @@ public:
     CGameCtnBlockInfoClip *JunctionAt(ECardinalDir direction) const;
 
 private:
+    friend class CGameCtnChallenge;
     friend class CGameCtnFieldUnit;
 
     void ConnectToField(CGameCtnBlock *block,

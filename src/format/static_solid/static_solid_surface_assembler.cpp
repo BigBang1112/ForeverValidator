@@ -251,8 +251,7 @@ int StaticSolidSurfaceAssembler::MaterializeArchiveGraph(
     if (!LinkSurfacesToGeoms(surfaceGraph)) {
         return 0;
     }
-    ApplySurfaceMaterialEntries(surfaceGraph);
-    return 1;
+    return ApplySurfaceMaterialEntries(surfaceGraph);
 }
 
 int StaticSolidSurfaceAssembler::AllocateForGraph(
@@ -411,7 +410,8 @@ int StaticSolidSurfaceAssembler::MaterializeSurfaceGeometryDefinition(
         }
         if (!mesh->SetGeometry(std::move(decodedMesh.vertices),
                                std::move(decodedMesh.triangles),
-                               std::move(decodedMesh.octreeCells))) {
+                               std::move(decodedMesh.octreeCells),
+                               GmSurfMesh::PlaneSource::Archived)) {
             return 0;
         }
     }
@@ -485,12 +485,12 @@ int StaticSolidSurfaceAssembler::LinkSurfacesToGeoms(
     return ok;
 }
 
-void StaticSolidSurfaceAssembler::ApplySurfaceMaterialEntry(
+int StaticSolidSurfaceAssembler::ApplySurfaceMaterialEntry(
         CGameCtnReplayStaticSolidArchiveNodeIdentity surfaceNode,
         const CGameCtnReplayStaticSolidArchiveSurfaceMaterialEntry &entry) {
     const u32 surfaceIndex = SurfaceIndexForNode(surfaceNode);
     if (surfaceIndex == UINT32_MAX || surfaceIndex >= SurfaceCount()) {
-        return;
+        return 0;
     }
 
     CPlugSurface *surface = SurfaceAt(surfaceIndex);
@@ -505,19 +505,17 @@ void StaticSolidSurfaceAssembler::ApplySurfaceMaterialEntry(
     }
 
     if (material == nullptr) {
-        return;
+        return 0;
     }
-    resources.AssignSurfaceMaterial(
+    return resources.AssignSurfaceMaterial(
             surface, entry.MaterialSlotIndex(), material);
 }
 
-void StaticSolidSurfaceAssembler::ApplySurfaceMaterialEntries(
+int StaticSolidSurfaceAssembler::ApplySurfaceMaterialEntries(
         const CGameCtnReplayStaticSolidArchiveSurfaceGraph &surfaceGraph) {
-    surfaceGraph.ForEachSurfaceMaterialEntry([&](
+    return surfaceGraph.ForEachSurfaceMaterialEntry([&](
             const CGameCtnReplayStaticSolidArchiveSurfaceMaterialEntry &entry) {
-        ApplySurfaceMaterialEntry(entry.Surface(),
-                                  entry);
-        return 1;
+        return ApplySurfaceMaterialEntry(entry.Surface(), entry);
     });
 }
 

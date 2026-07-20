@@ -1,7 +1,45 @@
 #include "engine/core/gm_types.h"
+#include <cmath>
+
 #include "engine/core/binary32_math.h"
 #include "engine/physics/geometry/geometry_helpers.h"
 #include "engine/physics/geometry/physics_tolerances.h"
+
+unsigned long GmVec4::PlaneEqIsNearlyEqual(
+        const GmVec4 &other,
+        float normalDotThreshold,
+        float distanceThreshold) const {
+    (void)normalDotThreshold;
+    (void)distanceThreshold;
+    const float normalDot =
+            other.y * y + other.x * x + other.z * z;
+    return normalDot >= 0.9900000095367432f &&
+                   std::fabs(w - other.w) <= 0.10000000149011612f
+            ? 1ul
+            : 0ul;
+}
+
+void GmVec4::PlaneEqMult(const GmIso4 &iso) {
+    const GmVec4 source = *this;
+    const GmVec3 transformedNormal = {
+            (iso.rotation.basisX.y * source.y +
+             iso.rotation.basisX.x * source.x) +
+                    iso.rotation.basisX.z * source.z,
+            (iso.rotation.basisY.x * source.x +
+             iso.rotation.basisY.y * source.y) +
+                    iso.rotation.basisY.z * source.z,
+            (iso.rotation.basisZ.x * source.x +
+             iso.rotation.basisZ.y * source.y) +
+                    iso.rotation.basisZ.z * source.z,
+    };
+    x = transformedNormal.x;
+    y = transformedNormal.y;
+    z = transformedNormal.z;
+    w = source.w -
+            ((transformedNormal.x * iso.translation.x +
+              transformedNormal.y * iso.translation.y) +
+             transformedNormal.z * iso.translation.z);
+}
 
 GmVec3 GmVec3::Zero(void) {
     GmVec3 zeroVector = {0.0f, 0.0f, 0.0f};

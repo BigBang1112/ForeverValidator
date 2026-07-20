@@ -11,6 +11,11 @@ constexpr u32 TMNF_CGameCtnCollectorChunk_LoadableNodRefAndId = 0x0301a009u;
 constexpr u32 TMNF_CGameCtnCollectorChunk_CMwId0301A00A = 0x0301a00au;
 constexpr u32 TMNF_CGameCtnCollectorChunk_SGameCtnIdentifier = 0x0301a00bu;
 
+constexpr u32 TMNF_CGameCtnDecorationChunk_03038011 = 0x03038011u;
+
+constexpr u32 TMNF_CGameCtnDecorationSizeChunk_0303B000 = 0x0303b000u;
+constexpr u32 TMNF_CGameCtnDecorationSizeChunk_0303B001 = 0x0303b001u;
+
 static inline u32 TMNF_CPlugSolidCanonicalChunkIdFromArchiveWord(u32 chunkId) {
     /*
      * Solid chunks use the canonical 0x09005000 selector family. Some packed

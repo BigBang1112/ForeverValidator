@@ -7,6 +7,7 @@
 #include "engine/core/gx_color.h"
 #include "engine/rendering/plug.h"
 struct CPlugBitmap;
+struct CPlugBitmapRender;
 struct CPlugBitmapRenderScene3d;
 struct CPlugMaterialCustom;
 struct CPlugShader;
@@ -108,10 +109,12 @@ public:
     void SetDirty(int dirty, int visionDirty);
     bool IsDirty(void) const;
     bool IsVisionDirty(void) const;
-    CPlugBitmapRenderScene3d *FindScene3dBitmapRender(
+    void SetArchiveFlags(u32 flags);
+    u32 ArchiveFlags(void) const;
+    CPlugBitmapRender *FindBitmapRenderByClassId(
+            unsigned long classId,
             CPlugBitmap **outBitmap,
             CPlugBitmapAddress **outAddress);
-
 private:
     const CPlugBitmapAddress *RenderBeforeAddress(u32 index) const;
 
@@ -119,6 +122,7 @@ private:
     std::vector<CMwNodRef<CPlugShaderPass>> passes_;
     bool dirty_ = false;
     bool visionDirty_ = false;
+    u32 archiveFlags_ = 0u;
 };
 
 class CPlugShaderGeneric : public CPlugShader {

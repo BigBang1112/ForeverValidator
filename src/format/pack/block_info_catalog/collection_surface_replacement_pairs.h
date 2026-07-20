@@ -19,6 +19,7 @@ public:
 
     int Contains(const char *sourceSurfaceIdName,
                  const char *targetSurfaceIdName) const;
+    const std::vector<CollectionReplacementPair> &Pairs() const;
     u32 OverflowCount() const;
     int LoadCatalogCollection(const CPlugFilePack *installedPack,
                               const char *collectionName);

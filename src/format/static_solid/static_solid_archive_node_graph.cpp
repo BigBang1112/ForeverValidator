@@ -46,6 +46,16 @@ int CGameCtnReplayStaticSolidArchiveNodeGraph::Node::SetName(
     return 1;
 }
 
+void CGameCtnReplayStaticSolidArchiveNodeGraph::Node::SetHmsItemState(
+        const HmsItemArchiveWords &newState) {
+    hmsItemState = newState;
+}
+
+const std::optional<HmsItemArchiveWords> &
+CGameCtnReplayStaticSolidArchiveNodeGraph::Node::HmsItemState() const {
+    return hmsItemState;
+}
+
 void CGameCtnReplayStaticSolidArchiveNodeGraph::Node::MarkInline(
         u32 newClassId) {
     present = 1u;
@@ -53,6 +63,7 @@ void CGameCtnReplayStaticSolidArchiveNodeGraph::Node::MarkInline(
     loadable = 0u;
     folderIndex = 0xffffffffu;
     classId = newClassId;
+    hmsItemState.reset();
 }
 
 int CGameCtnReplayStaticSolidArchiveNodeGraph::Node::MarkExternal(
@@ -63,6 +74,7 @@ int CGameCtnReplayStaticSolidArchiveNodeGraph::Node::MarkExternal(
     external = 1u;
     loadable = newLoadable;
     folderIndex = newFolderIndex;
+    hmsItemState.reset();
     try {
         name = newName.c_str();
     } catch (const std::bad_alloc &) {
@@ -185,6 +197,27 @@ int CGameCtnReplayStaticSolidArchiveNodeGraph::SetNodeName(
         return 0;
     }
     return node->SetName(name);
+}
+
+int CGameCtnReplayStaticSolidArchiveNodeGraph::RememberHmsItemState(
+        ArchiveNodeReference nodeRef,
+        const HmsItemArchiveWords &state) {
+    const u32 index = nodeRef.Index();
+    Node *node = (size_t)index < nodes.size() ? &nodes[index] : nullptr;
+    if (node == nullptr) {
+        return 0;
+    }
+    node->SetHmsItemState(state);
+    return 1;
+}
+
+const HmsItemArchiveWords *
+CGameCtnReplayStaticSolidArchiveNodeGraph::HmsItemStateForSceneMobil(
+        ArchiveNodeReference nodeRef) const {
+    const Node *node = FindNode(nodeRef);
+    return node != nullptr && node->HmsItemState().has_value()
+            ? &*node->HmsItemState()
+            : nullptr;
 }
 
 void CGameCtnReplayStaticSolidArchiveNodeGraph::MarkInlineNode(

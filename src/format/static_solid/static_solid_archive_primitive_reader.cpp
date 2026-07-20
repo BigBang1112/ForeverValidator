@@ -1,6 +1,5 @@
 #include "format/static_solid/static_solid_archive_primitive_reader.h"
 #include "format/static_solid/static_solid_archive_byte_stream.h"
-#include "format/archive/tmnf_archive_ids.h"
 int CGameCtnReplayStaticSolidArchivePrimitiveReader::SkipFloatBuffer(
         CGameCtnReplayStaticSolidArchiveByteStream *byteStream) {
     if (byteStream == nullptr) {
@@ -72,33 +71,6 @@ int CGameCtnReplayStaticSolidArchivePrimitiveReader::SkipFrustumIso4(
         return 0;
     }
     return 1;
-}
-
-int CGameCtnReplayStaticSolidArchivePrimitiveReader::SkipInlineArchivePayload(
-        CGameCtnReplayStaticSolidArchiveByteStream *byteStream) {
-    if (byteStream == nullptr) {
-        return 0;
-    }
-    const u32 payloadUncompressedSize = byteStream->PayloadUncompressedSize();
-    if (byteStream->Offset() > payloadUncompressedSize ||
-        payloadUncompressedSize - byteStream->Offset() < 4u) {
-        return 0;
-    }
-    for (u32 cursor = byteStream->Offset();
-         cursor <= payloadUncompressedSize - 4u;
-         cursor++) {
-        if (!byteStream->Ensure(cursor + 4u)) {
-            return 0;
-        }
-        u32 word = 0u;
-        if (!byteStream->PeekU32At(cursor, &word)) {
-            return 0;
-        }
-        if (word == CMwNodArchiveFacadeSentinel) {
-            return byteStream->SetOffset(cursor + 4u);
-        }
-    }
-    return 0;
 }
 
 int CGameCtnReplayStaticSolidArchivePrimitiveReader::SkipD3dFormatArray(

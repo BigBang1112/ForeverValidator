@@ -14,9 +14,37 @@
 #include "format/static_solid/static_solid_archive_primitive_reader.h"
 #include "format/static_solid/static_solid_external_node_paths.h"
 #include "format/archive/tmnf_archive_ids.h"
-#include <stdio.h>
-
 namespace {
+
+int ReadDiscardedF32Values(
+        CGameCtnReplayStaticSolidArchiveByteStream *byteStream,
+        u32 count) {
+    if (byteStream == nullptr) {
+        return 0;
+    }
+    float value = 0.0f;
+    for (u32 index = 0u; index < count; ++index) {
+        if (!byteStream->ReadF32(&value)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+int ReadDiscardedU32Values(
+        CGameCtnReplayStaticSolidArchiveByteStream *byteStream,
+        u32 count) {
+    if (byteStream == nullptr) {
+        return 0;
+    }
+    u32 value = 0u;
+    for (u32 index = 0u; index < count; ++index) {
+        if (!byteStream->ReadU32(&value)) {
+            return 0;
+        }
+    }
+    return 1;
+}
 
 class CSceneArchiveLocalNodeRef {
 public:
@@ -214,7 +242,11 @@ int CSceneMobilReferencePayload::ReadBeforeIso(
     }
     const ArchiveNodeReference nodeRef =
             ArchiveNodeReference::FromIndex(index);
-    if (nodeRef.IsInvalid() || archiveNodeGraph_->HasNode(nodeRef)) {
+    const CGameCtnReplayStaticSolidArchiveNodeGraph::Node *knownNode =
+            archiveNodeGraph_->FindNode(nodeRef);
+    if (nodeRef.IsInvalid() ||
+        (knownNode != nullptr && knownNode->IsPresent() &&
+         !knownNode->IsExternal())) {
         return 1;
     }
     if (!byteStream->Ensure(byteStream->Offset() + 4u)) {
@@ -368,12 +400,19 @@ int CSceneObjectPlacementArchivePayload::Append(
     }
 
     StaticSceneArchiveModelRecord archiveModel;
+    std::optional<CHmsItem::Properties> itemProperties;
+    if (const HmsItemArchiveWords *state =
+                context_.archiveNodeGraph->HmsItemStateForSceneMobil(
+                        mobilNode)) {
+        itemProperties = DecodeHmsItemArchiveState(*state);
+    }
     if (modelPath.HasSelectedPath()) {
         if (!archiveModel.ConfigureFromSceneObject(
                     sceneIso,
                     treeNode.Index(),
                     sceneObjectId,
-                    modelPath.SelectedPath())) {
+                    modelPath.SelectedPath(),
+                    itemProperties ? &*itemProperties : nullptr)) {
             return 0;
         }
     } else {
@@ -381,7 +420,8 @@ int CSceneObjectPlacementArchivePayload::Append(
                     sceneIso,
                     treeNode.Index(),
                     sceneObjectId,
-                    payloadAsset->SelectedDescriptorPath())) {
+                    payloadAsset->SelectedDescriptorPath(),
+                    itemProperties ? &*itemProperties : nullptr)) {
             return 0;
         }
     }
@@ -466,31 +506,17 @@ CScene3dObjectBuffersArchivePayload::CScene3dObjectBuffersArchivePayload(
         const CSceneArchivePayloadContext &context)
         : context_(context) {}
 
-int CScene3dObjectBuffersArchivePayload::ReadTrailingOptionalChunks(
+int CScene3dObjectBuffersArchivePayload::ReadTrailingMemoryArchiveChunks(
         CGameCtnReplayStaticSolidArchiveByteStream *byteStream) {
-    if (byteStream->Offset() >= byteStream->Produced()) {
-        return byteStream->Offset() == byteStream->Produced();
-    }
     CScene3dArchivePayload scene3d(context_);
-    if (!scene3d.Read(byteStream,
-                      ArchiveChunkIdValue(
-                              CScene3dArchiveChunkId::TrafficPairLocs))) {
-        return 0;
-    }
-    if (byteStream->Offset() >= byteStream->Produced()) {
-        return byteStream->Offset() == byteStream->Produced();
-    }
-    if (!scene3d.Read(byteStream,
-                      ArchiveChunkIdValue(
-                              CScene3dArchiveChunkId::TrafficGraphPaths))) {
-        return 0;
-    }
-    if (byteStream->Offset() >= byteStream->Produced()) {
-        return byteStream->Offset() == byteStream->Produced();
-    }
-    return scene3d.Read(byteStream,
-                        ArchiveChunkIdValue(
-                                CScene3dArchiveChunkId::SingleNodRef));
+    return scene3d.Read(
+                   byteStream,
+                   ArchiveChunkIdValue(
+                           CScene3dArchiveChunkId::TrafficGraphPaths)) &&
+           scene3d.Read(
+                   byteStream,
+                   ArchiveChunkIdValue(
+                           CScene3dArchiveChunkId::SingleNodRef));
 }
 
 int CScene3dObjectBuffersArchivePayload::Read(
@@ -536,7 +562,7 @@ int CScene3dObjectBuffersArchivePayload::Read(
                                                            context_.nodeRefs)) {
         return 0;
     }
-    return ReadTrailingOptionalChunks(byteStream);
+    return ReadTrailingMemoryArchiveChunks(byteStream);
 }
 
 CSceneSectorArchivePayload::CSceneSectorArchivePayload(
@@ -747,7 +773,7 @@ int CSceneObjectOrMobilArchivePayload::ReadVehicleRefCluster(
             return CSceneArchiveNodeRefPayload::ReadSingle(context_.nodeRefs) &&
                    CSceneArchiveNodeRefPayload::ReadSingle(context_.nodeRefs);
         case ArchiveChunkIdValue(CSceneVehicleCarArchiveChunkId::PhysicalParams):
-            return byteStream->Skip(24u);
+            return byteStream->Skip(32u);
         default:
             return 0;
     }
@@ -789,7 +815,7 @@ int CSceneObjectOrMobilArchivePayload::Read(
                            context_.currentArchiveNode,
                            TMNF_CLASS_CHmsLight,
                            1,
-                           0);
+                           1);
         case TMNF_CLASS_CSceneSoundSource:
             return context_.nodeParser != nullptr &&
                    context_.nodeParser->ParseNodeArchiveInternal(
@@ -818,6 +844,48 @@ int CSceneObjectOrMobilArchivePayload::Read(
     }
 }
 
+CSceneMobilLeavesArchivePayload::CSceneMobilLeavesArchivePayload(
+        CGameCtnReplayStaticSolidArchiveNodeRefReader *nodeRefs)
+        : nodeRefs_(nodeRefs) {}
+
+int CSceneMobilLeavesArchivePayload::Chunk(
+        CGameCtnReplayStaticSolidArchiveByteStream *byteStream,
+        u32 chunkId) {
+    if (byteStream == nullptr || nodeRefs_ == nullptr) {
+        return 0;
+    }
+    if (!IsCSceneMobilLeavesInfo1Chunk(chunkId) &&
+        !IsCSceneMobilLeavesInfo3Chunk(chunkId)) {
+        return 0;
+    }
+    if (!CSceneArchiveNodeRefPayload::ReadSingle(nodeRefs_)) {
+        return 0;
+    }
+    switch (chunkId) {
+        case ArchiveChunkIdValue(CSceneMobilLeavesArchiveChunkId::Legacy):
+            return ReadDiscardedF32Values(byteStream, 4u) &&
+                   ReadDiscardedU32Values(byteStream, 1u) &&
+                   ReadDiscardedF32Values(byteStream, 15u);
+        case ArchiveChunkIdValue(
+                CSceneMobilLeavesArchiveChunkId::
+                        LegacyWithoutFinalScalar):
+            return ReadDiscardedF32Values(byteStream, 2u) &&
+                   ReadDiscardedU32Values(byteStream, 1u) &&
+                   ReadDiscardedF32Values(byteStream, 13u);
+        case ArchiveChunkIdValue(
+                CSceneMobilLeavesArchiveChunkId::LegacyWithFinalScalar):
+            return ReadDiscardedF32Values(byteStream, 2u) &&
+                   ReadDiscardedU32Values(byteStream, 1u) &&
+                   ReadDiscardedF32Values(byteStream, 14u);
+        case ArchiveChunkIdValue(CSceneMobilLeavesArchiveChunkId::Root):
+            return ReadDiscardedF32Values(byteStream, 2u) &&
+                   ReadDiscardedU32Values(byteStream, 2u) &&
+                   ReadDiscardedF32Values(byteStream, 14u);
+        default:
+            return 0;
+    }
+}
+
 CSceneVehicleEnvironmentArchivePayload::
         CSceneVehicleEnvironmentArchivePayload(
         const CSceneArchivePayloadContext &context)
@@ -837,8 +905,8 @@ int CSceneVehicleEnvironmentArchivePayload::Read(
     if (chunkId ==
         ArchiveChunkIdValue(
                 CSceneVehicleEnvironmentArchiveChunkId::MaterialRefArray)) {
-        return CSceneArchiveNodeRefPayload::ReadFastBuffer(byteStream,
-                                                                 context_.nodeRefs);
+        return CSceneArchiveNodeRefPayload::ReadCountedArray(
+                byteStream, context_.nodeRefs);
     }
     return 0;
 }

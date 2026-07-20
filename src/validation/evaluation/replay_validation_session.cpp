@@ -6,6 +6,15 @@ std::optional<std::int32_t> ReplayValidationReplay::ExpectedRaceTimeMs() const {
     return inputTimeline_.Metadata().raceTimeMs;
 }
 
+std::optional<std::int32_t>
+ReplayValidationReplay::ExpectedStuntsScore() const {
+    if (!inputTimeline_.Metadata().stuntScore.has_value()) {
+        return std::nullopt;
+    }
+    return static_cast<std::int32_t>(
+            *inputTimeline_.Metadata().stuntScore);
+}
+
 std::optional<std::int32_t> ReplayValidationReplay::ExpectedRespawns() const {
     if (!inputTimeline_.Metadata().respawnCount.has_value()) {
         return std::nullopt;
@@ -42,8 +51,10 @@ std::uint32_t ReplayValidationReplay::RequestedSamples(
 }
 
 ReplayValidationPlan ReplayValidationReplay::BuildStreamPlan(
-        const ReplayValidationConfiguration &configuration) const {
+        const ReplayValidationConfiguration &configuration,
+        ReplayValidationMode validationMode) const {
     ReplayValidationPlan plan;
+    plan.validationMode = validationMode;
     plan.sampleCount = ghostTrajectory_.SampleCount();
     plan.samplePeriodMs = ghostTrajectory_.FixedStepMs();
     plan.requestedSamples = RequestedSamples(configuration);
@@ -57,12 +68,29 @@ ReplayValidationPlan ReplayValidationReplay::BuildStreamPlan(
             inputTimeline_.Metadata().durationMs);
     plan.enableRaceSimulationAfterMs =
             static_cast<std::int32_t>(configuration.validationPrestartMs);
-    plan.establishRaceSpawnAtMs = std::nullopt;
+    plan.establishRaceSpawnAtMs = 0;
+    plan.baseActions.enableStuntsSimulation =
+            validationMode == ReplayValidationMode::Stunts;
+    plan.baseActions.stuntsTimeLimitMs =
+            plan.baseActions.enableStuntsSimulation
+                    ? stuntsTimeLimitMs_.value_or(
+                              DefaultChallengeStuntsTimeLimitMs)
+                    : 0u;
 
-    // The validation schema uses zero for an unspecified race-time window,
-    // while the expectation itself remains explicit.
-    plan.expectedRaceTimeMs = ExpectedRaceTimeMs().value_or(0);
-    plan.expectedStuntsScore = std::nullopt;
+    // Race keeps the legacy zero sentinel. Platform and Puzzle require an
+    // explicit recorded time so missing metadata can be rejected.
+    // Stunts validates its independently simulated score instead of race time.
+    if (validationMode == ReplayValidationMode::Stunts) {
+        plan.expectedRaceTimeMs = std::nullopt;
+        plan.expectedStuntsScore = ExpectedStuntsScore();
+    } else if (validationMode == ReplayValidationMode::Platform ||
+               validationMode == ReplayValidationMode::Puzzle) {
+        plan.expectedRaceTimeMs = ExpectedRaceTimeMs();
+        plan.expectedStuntsScore = std::nullopt;
+    } else {
+        plan.expectedRaceTimeMs = ExpectedRaceTimeMs().value_or(0);
+        plan.expectedStuntsScore = std::nullopt;
+    }
     plan.expectedRespawns = ExpectedRespawns();
     return plan;
 }
@@ -83,21 +111,12 @@ ReplayValidationMetadata ReplayValidationReplay::BuildMetadata(
     return metadata;
 }
 
-ReplayFileValidationBuild ValidateReplayFile(
+namespace {
+
+ReplayFileValidationResult BuildReplayFileMetadata(
         const ReplayFile &replayFile,
-        ReplaySimulationSession &simulationSession,
-        const ReplaySimulationDefinition &simulationDefinition,
+        const ReplayValidationReplay &replay,
         const ReplayValidationConfiguration &configuration) {
-    if (!configuration.IsValid()) {
-        return ReplayFileValidationBuild::Failure(
-                ReplayValidationExecutionResult::MissingInput);
-    }
-
-    ReplayValidationReplay replay(
-            replayFile.InputTimeline(),
-            replayFile.GhostTrajectory());
-    const ReplayValidationPlan plan = replay.BuildStreamPlan(configuration);
-
     ReplayFileValidationResult result;
     result.metadata = replay.BuildMetadata(configuration);
     const ReplayGhostArchiveMetadata &ghostArchive =
@@ -106,6 +125,88 @@ ReplayFileValidationBuild ValidateReplayFile(
             ghostArchive.encodedSampleByteCount;
     result.metadata.encodedGhostStateByteCount =
             ghostArchive.encodedStateByteCount;
+    return result;
+}
+
+}  // namespace
+
+std::optional<ReplayFileValidationResult> ClassifyReplayCompatibility(
+        const ReplayFile &replayFile,
+        const ReplayValidationConfiguration &configuration) {
+    if (!configuration.IsValid() ||
+        replayFile.CompatibilityMetadata().IsCompatible()) {
+        return std::nullopt;
+    }
+    ReplayValidationReplay replay(
+            replayFile.InputTimeline(),
+            replayFile.GhostTrajectory(),
+            replayFile.ChallengeMetadata().stuntsTimeLimitMs);
+    ReplayFileValidationResult result = BuildReplayFileMetadata(
+            replayFile, replay, configuration);
+    result.validation.expectedSamples = static_cast<std::uint32_t>(
+            result.metadata.expectedSamples);
+    result.validation.status =
+            ReplayValidationStatus::IncompatibleReplayVersion;
+    result.validation.outcome = ReplayValidationOutcome::Invalid;
+    return result;
+}
+
+std::optional<ReplayFileValidationResult> ClassifyReplayInputAvailability(
+        const ReplayFile &replayFile,
+        const ReplayValidationConfiguration &configuration) {
+    if (!configuration.IsValid() || replayFile.HasValidationInput()) {
+        return std::nullopt;
+    }
+    ReplayValidationReplay replay(
+            replayFile.InputTimeline(),
+            replayFile.GhostTrajectory(),
+            replayFile.ChallengeMetadata().stuntsTimeLimitMs);
+    ReplayFileValidationResult result = BuildReplayFileMetadata(
+            replayFile, replay, configuration);
+    result.validation.expectedSamples = static_cast<std::uint32_t>(
+            result.metadata.expectedSamples);
+    result.validation.status = ReplayValidationStatus::InputUnavailable;
+    result.validation.outcome = ReplayValidationOutcome::Unavailable;
+    return result;
+}
+
+ReplayFileValidationBuild ValidateReplayFile(
+        const ReplayFile &replayFile,
+        ReplayValidationMode validationMode,
+        ReplaySimulationSession &simulationSession,
+        const ReplaySimulationDefinition &simulationDefinition,
+        const ReplayValidationConfiguration &configuration) {
+    if (!configuration.IsValid()) {
+        return ReplayFileValidationBuild::Failure(
+                ReplayValidationExecutionResult::MissingInput);
+    }
+    std::optional<ReplayFileValidationResult> compatibility =
+            ClassifyReplayCompatibility(replayFile, configuration);
+    if (compatibility.has_value()) {
+        return ReplayFileValidationBuild::Success(
+                std::move(*compatibility));
+    }
+    std::optional<ReplayFileValidationResult> inputAvailability =
+            ClassifyReplayInputAvailability(replayFile, configuration);
+    if (inputAvailability.has_value()) {
+        return ReplayFileValidationBuild::Success(
+                std::move(*inputAvailability));
+    }
+
+    ReplayValidationReplay replay(
+            replayFile.InputTimeline(),
+            replayFile.GhostTrajectory(),
+            replayFile.ChallengeMetadata().stuntsTimeLimitMs);
+    ReplayValidationPlan plan = replay.BuildStreamPlan(
+            configuration, validationMode);
+    const ReplayChallengeMetadata &challenge =
+            replayFile.ChallengeMetadata();
+    plan.playMode = challenge.playMode.value_or(EChallengePlayMode::Race);
+    plan.isLapRace = challenge.isLapRace;
+    plan.lapCount = challenge.isLapRace ? challenge.lapCount : 1u;
+
+    ReplayFileValidationResult result = BuildReplayFileMetadata(
+            replayFile, replay, configuration);
 
     ReplayValidationExecutionOutput execution;
     const ReplayValidationExecutionResult status = ExecuteReplayValidation(
@@ -118,6 +219,14 @@ ReplayFileValidationBuild ValidateReplayFile(
     if (status == ReplayValidationExecutionResult::Success) {
         result.validation = std::move(execution.validation);
         result.raceOutcome = std::move(execution.raceOutcome);
+        return ReplayFileValidationBuild::Success(std::move(result));
+    }
+    if (status == ReplayValidationExecutionResult::MapStartUnavailable) {
+        result.validation.expectedSamples = static_cast<std::uint32_t>(
+                plan.expectedSamples);
+        result.validation.status = ReplayValidationStatus::WrongSimulation;
+        result.validation.outcome = ReplayValidationOutcome::WrongSimulation;
+        result.validation.wrongSimulation = true;
         return ReplayFileValidationBuild::Success(std::move(result));
     }
     return ReplayFileValidationBuild::Failure(status);

@@ -89,7 +89,7 @@ struct CScene3dObjectBuffersArchivePayload {
              u32 chunkId);
 
 private:
-    int ReadTrailingOptionalChunks(
+    int ReadTrailingMemoryArchiveChunks(
             CGameCtnReplayStaticSolidArchiveByteStream *byteStream);
 
     CSceneArchivePayloadContext context_;
@@ -137,6 +137,17 @@ private:
             u32 chunkId);
 
     CSceneArchivePayloadContext context_;
+};
+
+struct CSceneMobilLeavesArchivePayload {
+    explicit CSceneMobilLeavesArchivePayload(
+            CGameCtnReplayStaticSolidArchiveNodeRefReader *nodeRefs);
+
+    int Chunk(CGameCtnReplayStaticSolidArchiveByteStream *byteStream,
+              u32 chunkId);
+
+private:
+    CGameCtnReplayStaticSolidArchiveNodeRefReader *nodeRefs_;
 };
 
 struct CSceneVehicleEnvironmentArchivePayload {

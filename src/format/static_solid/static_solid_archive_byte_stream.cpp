@@ -5,11 +5,9 @@
 
 #include "format/archive/classic_buffer_crypted.h"
 #include "format/archive/archive_binary32.h"
+#include "format/archive/archive_class_ids.h"
 #include "format/static_solid/static_solid_archive_feedback.h"
 #include <new>
-static constexpr const char *DefaultVehicleTuningsPackPath =
-        "Vehicles\\CarCommon\\Tunings\\Stadium\\C2A.StadiumCar.Gbx";
-
 CGameCtnReplayStaticSolidArchiveByteStream::
         ~CGameCtnReplayStaticSolidArchiveByteStream() {
     Close();
@@ -79,10 +77,11 @@ int CGameCtnReplayStaticSolidArchiveByteStream::OpenEncryptedFeedbackPayload(
     return 1;
 }
 
-int CGameCtnReplayStaticSolidArchiveByteStream::IsDefaultVehicleTunings()
+int CGameCtnReplayStaticSolidArchiveByteStream::IsVehicleTunings()
         const {
     return activePayload != nullptr &&
-           activePayload->MatchesSelectedDescriptor(DefaultVehicleTuningsPackPath);
+           activePayload->DescriptorClassId() ==
+                   TMNF_CLASS_CSceneVehicleTunings;
 }
 
 int CGameCtnReplayStaticSolidArchiveByteStream::ApplyFeedbackValue(
@@ -93,7 +92,7 @@ int CGameCtnReplayStaticSolidArchiveByteStream::ApplyFeedbackValue(
                 encryptedReader,
                 value,
                 nested,
-                IsDefaultVehicleTunings())) {
+                IsVehicleTunings())) {
         failed = 1;
         return 0;
     }
@@ -112,7 +111,7 @@ int CGameCtnReplayStaticSolidArchiveByteStream::PrefetchVehicleCompressedPage() 
     if (activePayload == nullptr ||
         encryptedReader == nullptr ||
         !activePayload->IsCompressed() ||
-        !IsDefaultVehicleTunings()) {
+        !IsVehicleTunings()) {
         return 1;
     }
     if (compressedRead >= activePayload->CompressedByteCount()) {
@@ -202,10 +201,10 @@ int CGameCtnReplayStaticSolidArchiveByteStream::FillWindow() {
         return outputWindowCount != 0u;
     }
     const u32 outputCapacity = OutputWindowCapacity;
-    const int isDefaultVehicleTunings = IsDefaultVehicleTunings();
+    const int isVehicleTunings = IsVehicleTunings();
     while (outputWindowCount < outputCapacity && !zlibEof) {
         if (zlib.avail_in == 0u) {
-            if (isDefaultVehicleTunings) {
+            if (isVehicleTunings) {
                 if (feedback == nullptr) {
                     failed = 1;
                     return 0;
@@ -316,6 +315,32 @@ int CGameCtnReplayStaticSolidArchiveByteStream::SkipCounted(
         return 0;
     }
     return Skip(count * stride);
+}
+
+int CGameCtnReplayStaticSolidArchiveByteStream::FinishExactPayload() {
+    if (failed || activePayload == nullptr ||
+        (encryptedReader != nullptr && encryptedReader->Error() != 0) ||
+        offset != activePayload->UncompressedByteCount() ||
+        produced != activePayload->UncompressedByteCount() ||
+        outputWindowOffset != outputWindowCount) {
+        return 0;
+    }
+    if (!activePayload->IsCompressed()) {
+        return !zlibReady && zlibEof &&
+               compressedRead == activePayload->UncompressedByteCount();
+    }
+    if (!zlibReady) {
+        return 0;
+    }
+    if (!zlibEof && FillWindow()) {
+        return 0;
+    }
+    return !failed && zlibEof &&
+           zlib.total_out ==
+                   static_cast<uLong>(activePayload->UncompressedByteCount()) &&
+           outputWindowOffset == outputWindowCount &&
+           compressedRead == activePayload->CompressedByteCount() &&
+           zlib.avail_in == 0u;
 }
 
 int CGameCtnReplayStaticSolidArchiveByteStream::Ensure(u32 size) {

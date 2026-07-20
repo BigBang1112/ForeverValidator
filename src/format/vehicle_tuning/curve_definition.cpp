@@ -133,8 +133,10 @@ int ApplyVehicleTuningCurves(const std::vector<VehicleTuningCurveRecord> &record
                 }
             }
             if (found == nullptr) {
-                fprintf(stderr, "missing tuning archive curve chunk=0x%08x nod=%u\n",
-                        ArchiveChunkIdValue(ref.chunkId), ref.nodRefIndex);
+                if (ref.target == VehicleTuningCurveTarget::
+                                          WheelVisualSteerAngleFromSpeedCurve) {
+                    continue;
+                }
                 return 3;
             }
             AssignCurveDefinition(curves, ref.target,

@@ -167,6 +167,36 @@ void GmQuat::SetSlerp(GmQuat from, const GmQuat &to, float blend) {
     z = fromWeight * from.z + toWeight * to.z;
 }
 
+void GmQuat::GetRotation(float &angle, GmVec3 &axis) {
+    axis = {x, y, z};
+    const float lengthSquared =
+            axis.z * axis.z + axis.y * axis.y + axis.x * axis.x;
+    if (lengthSquared <= 9.9999994396249292e-11f) {
+        axis = {1.0f, 0.0f, 0.0f};
+        angle = 0.0f;
+        return;
+    }
+
+    const float inverseLength = 1.0f / CIsqrt(lengthSquared);
+    axis.x *= inverseLength;
+    axis.y *= inverseLength;
+    axis.z *= inverseLength;
+    unsigned dominant = std::fabs(axis.x) < std::fabs(axis.y) ? 1u : 0u;
+    const float dominantMagnitude = dominant == 0u
+            ? std::fabs(axis.x)
+            : std::fabs(axis.y);
+    if (dominantMagnitude < std::fabs(axis.z)) {
+        dominant = 2u;
+    }
+    const float quaternionComponent = dominant == 0u
+            ? x
+            : (dominant == 1u ? y : z);
+    const float axisComponent = dominant == 0u
+            ? axis.x
+            : (dominant == 1u ? axis.y : axis.z);
+    angle = 2.0f * CIatan2(quaternionComponent / axisComponent, w);
+}
+
 GmSpring<float>::GmSpring(void)
         : stiffness(40.0f),
           damping(GetCriticalKa()),

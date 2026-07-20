@@ -5,6 +5,7 @@
 #include <string_view>
 
 #include "engine/core/engine_types.h"
+#include "engine/game/material_render_definition.h"
 enum EPlugSurfaceMaterialId : std::uint8_t;
 struct CPlugMaterial;
 struct MaterialSurfaceDefinitionFormatAccess;
@@ -51,6 +52,7 @@ private:
 struct MaterialAssetDefinition {
     MaterialAssetHandle asset;
     MaterialSurfaceDefinition surface;
+    MaterialRenderDefinition render;
 };
 
 struct MaterialRemapCollection {

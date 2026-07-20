@@ -4,9 +4,12 @@
 
 #include "format/archive/classic_buffer_crypted.h"
 #include "format/archive/classic_archive_chunk_info.h"
+#include "format/archive/scene_object_archive_chunk_ids.h"
 #include "format/pack/installed/scene_descriptor_folder_paths.h"
 #include "format/pack/installed/plug_file_pack.h"
 #include "format/static_solid/static_solid_archive_byte_stream.h"
+#include "format/static_solid/static_solid_archive_animation_motion_reader.h"
+#include "format/static_solid/static_solid_archive_bitmap_reader.h"
 #include "format/static_solid/static_solid_archive_chunk_dispatcher.h"
 #include "format/static_solid/static_solid_archive_class_info.h"
 #include "format/static_solid/static_solid_archive_cmwid_state.h"
@@ -18,10 +21,26 @@
 #include "format/static_solid/static_solid_archive_root_reader.h"
 #include "format/static_solid/static_solid_archive_stream_roles.h"
 #include "format/static_solid/static_solid_archive_visual_provider_state.h"
+#include "format/static_solid/static_solid_archive_vehicle_struct_reader.h"
+#include "format/static_solid/static_solid_archive_scene_traffic_graph_reader.h"
 #include "format/static_solid/static_solid_descriptor_dependency_queue.h"
 #include "format/static_solid/static_solid_external_node_paths.h"
 #include "format/archive/tmnf_archive_ids.h"
 static constexpr size_t StaticSolidArchiveSharedNameCacheCapacity = 128u;
+
+namespace {
+
+int RequiresCompleteArchiveSemantics(u32 classId) {
+    return classId == TMNF_CLASS_CPlugMaterial ||
+           classId == TMNF_CLASS_CPlugMaterialCustom ||
+           classId == TMNF_CLASS_CPlugShaderApply ||
+           classId == TMNF_CLASS_CPlugShaderPass ||
+           classId == TMNF_CLASS_CPlugBitmapApply ||
+           classId == TMNF_CLASS_CPlugBitmap ||
+           classId == TMNF_CLASS_CPlugBitmapRenderWater;
+}
+
+}  // namespace
 
 class StaticSolidArchiveStream :
         public CGameCtnReplayStaticSolidArchiveNodeRefReader,
@@ -53,7 +72,9 @@ public:
     int ParseDecodedPayloadToEnd(
             u32 decodedByteCount,
             CGameCtnReplayStaticSolidArchiveDecodeStats *statsOut);
-
+    int ParseEncryptedReferenceTableHeader(
+            u32 maxPayloadByteCount,
+            CGameCtnReplayStaticSolidDecodedPayload *decoded);
 private:
     CGameCtnReplayStaticSolidArchiveByteStream byteStream;
     StaticSolidArchiveLoadSession *materialStore = nullptr;
@@ -62,8 +83,13 @@ private:
             StaticSolidArchiveId::Invalid();
     CGameCtnReplayStaticSolidArchiveCMwIdState cmwIdState;
     StaticSolidArchiveVisualState visualProviderState;
+    CSceneVehicleStructArchiveState vehicleStructState;
+    CSceneTrafficGraphArchiveState trafficGraphState;
+    CGameCtnReplayStaticSolidArchiveAnimationMotionState animationMotionState;
     ArchiveNodeReference currentArchiveNode =
             ArchiveNodeReference::Invalid();
+    u32 currentArchiveClassId = 0u;
+    u32 archiveNodeCountLimit = 0u;
     SceneDescriptorFolderPaths externalFolders;
     CGameCtnReplayStaticSolidArchiveNodeGraph archiveNodeGraph;
     CGameCtnReplayStaticSolidArchiveFeedback feedback;
@@ -71,12 +97,17 @@ private:
 
     int ApplyFeedbackValue(u32 value, int nested);
     int ApplyFeedback(u32 classId, int nested);
-    int ApplyFeedbackU32(u32 value, int nested);
+    int ApplyFeedbackU32(u32 value, int nested) override;
     int EmitNode(ArchiveNodeReference nodeRef,
                  u32 classId);
     int ReadNodeRef(
             ArchiveNodeReference *nodeRefOut);
-    int ParseRootNodeArchive(u32 maxPayloadByteCount);
+    int ReadNodeRefWithInlineState(
+            ArchiveNodeReference *nodeRefOut,
+            int *isInternalOut) override;
+    int ReadFidRef(ArchiveNodeReference *nodeRefOut) override;
+    int ParseRootNodeArchive(u32 maxPayloadByteCount,
+                             u32 *rootClassIdOut);
     int RequestExternalRefDescriptorDependencies(
             CGameCtnReplayStaticSolidDescriptorDependencyQueue *dependencyQueue) const;
     int SkipOrBreakUnknownChunk(u32 classId, u32 chunkId, int *breakArchiveOut);
@@ -123,6 +154,15 @@ int StaticSolidArchiveStream::EmitNode(
 
 int StaticSolidArchiveStream::ReadNodeRef(
         ArchiveNodeReference *nodeRefOut) {
+    return ReadNodeRefWithInlineState(nodeRefOut, nullptr);
+}
+
+int StaticSolidArchiveStream::ReadNodeRefWithInlineState(
+        ArchiveNodeReference *nodeRefOut,
+        int *isInternalOut) {
+    if (isInternalOut != nullptr) {
+        *isInternalOut = 0;
+    }
     u32 index = 0u;
     if (!byteStream.ReadU32(&index)) {
         return 0;
@@ -135,6 +175,20 @@ int StaticSolidArchiveStream::ReadNodeRef(
     if (nodeRef.IsInvalid()) {
         return 1;
     }
+    if (nodeRef.IsDeferred()) {
+        return 1;
+    }
+    if (nodeRef.Index() > archiveNodeCountLimit) {
+        return 0;
+    }
+    if (archiveNodeGraph.HasNode(nodeRef)) {
+        const CGameCtnReplayStaticSolidArchiveNodeGraph::Node *node =
+                archiveNodeGraph.FindNode(nodeRef);
+        if (isInternalOut != nullptr && node != nullptr) {
+            *isInternalOut = !node->IsExternal();
+        }
+        return 1;
+    }
     if (!byteStream.Ensure(byteStream.Offset() + 4u)) {
         return 0;
     }
@@ -145,6 +199,9 @@ int StaticSolidArchiveStream::ReadNodeRef(
     const u32 nextClass =
             TMNF_CPlugTreeCanonicalChunkIdFromArchiveWord(nextWord);
     if (!CGameCtnReplayStaticSolidArchiveClassInfo::IsKnownNodeClass(nextClass)) {
+        if (isInternalOut != nullptr) {
+            *isInternalOut = 1;
+        }
         return 1;
     }
     u32 rawClassId = 0u;
@@ -156,7 +213,32 @@ int StaticSolidArchiveStream::ReadNodeRef(
     const u32 classId =
             TMNF_CPlugTreeCanonicalChunkIdFromArchiveWord(rawClassId);
     archiveNodeGraph.MarkInlineNode(nodeRef, classId);
+    if (isInternalOut != nullptr) {
+        *isInternalOut = 1;
+    }
     return ParseNodeArchive(nodeRef, classId, 1);
+}
+
+int StaticSolidArchiveStream::ReadFidRef(
+        ArchiveNodeReference *nodeRefOut) {
+    u32 index = 0u;
+    if (!byteStream.ReadU32(&index)) {
+        return 0;
+    }
+    const ArchiveNodeReference nodeRef =
+            ArchiveNodeReference::FromIndex(index);
+    if (nodeRefOut != nullptr) {
+        *nodeRefOut = nodeRef;
+    }
+    if (nodeRef.IsInvalid()) {
+        return 1;
+    }
+    if (!nodeRef.IsValid() || nodeRef.Index() > archiveNodeCountLimit) {
+        return 0;
+    }
+    const CGameCtnReplayStaticSolidArchiveNodeGraph::Node *node =
+            archiveNodeGraph.FindNode(nodeRef);
+    return node != nullptr && node->IsExternal();
 }
 
 int StaticSolidArchiveStream::SkipOrBreakUnknownChunk(
@@ -259,6 +341,9 @@ int StaticSolidArchiveStream::ParseChunkPayload(u32 classId, u32 chunkId) {
             &decodeProgress,
             &archiveNodeGraph,
             &visualProviderState,
+            &vehicleStructState,
+            &trafficGraphState,
+            &animationMotionState,
             &externalFolders,
             materialStore,
             archiveModels,
@@ -289,15 +374,45 @@ int StaticSolidArchiveStream::ParseNodeArchiveInternal(
     decodeProgress.RecordArchiveNode(classId);
     const ArchiveNodeReference savedArchiveNode =
             currentArchiveNode;
+    const u32 savedArchiveClassId = currentArchiveClassId;
     currentArchiveNode = nodeRef;
+    currentArchiveClassId = classId;
+    if (classId == TMNF_CLASS_CPlugFileGen) {
+        const int parsed =
+                CGameCtnReplayStaticSolidArchiveBitmapReader::
+                        ParseCPlugFileGenPayload(&byteStream, this);
+        currentArchiveNode = savedArchiveNode;
+        currentArchiveClassId = savedArchiveClassId;
+        return parsed;
+    }
     for (;;) {
+        u32 nextChunkId = 0u;
+        if (!byteStream.PeekU32(&nextChunkId)) {
+            currentArchiveNode = savedArchiveNode;
+            currentArchiveClassId = savedArchiveClassId;
+            return 0;
+        }
+        const u32 ownerChunkId =
+                NormalizePackedCSceneObjectOrMobilArchiveChunkId(nextChunkId);
+        if (savedArchiveClassId != 0u &&
+            CGameCtnReplayStaticSolidArchiveClassInfo::ChunkInfo(
+                    classId, nextChunkId) == 0u) {
+            if (CGameCtnReplayStaticSolidArchiveClassInfo::ChunkInfo(
+                        savedArchiveClassId, ownerChunkId) != 0u) {
+                currentArchiveNode = savedArchiveNode;
+                currentArchiveClassId = savedArchiveClassId;
+                return 1;
+            }
+        }
         u32 chunkId = 0u;
         if (!byteStream.ReadU32(&chunkId)) {
             currentArchiveNode = savedArchiveNode;
+            currentArchiveClassId = savedArchiveClassId;
             return 0;
         }
         if (chunkId == CMwNodArchiveFacadeSentinel) {
             currentArchiveNode = savedArchiveNode;
+            currentArchiveClassId = savedArchiveClassId;
             return 1;
         }
         const u32 info = CGameCtnReplayStaticSolidArchiveClassInfo::ChunkInfo(classId, chunkId);
@@ -305,6 +420,16 @@ int StaticSolidArchiveStream::ParseNodeArchiveInternal(
         if (info == 0u ||
             (((info & 1u) == 0u) &&
              chunkInfo.HasSkipPayload())) {
+            if (classId == TMNF_CLASS_CMotionEmitterLeaves ||
+                RequiresCompleteArchiveSemantics(classId)) {
+                decodeProgress.MarkFailure(classId,
+                                           chunkId,
+                                           byteStream.Offset(),
+                                           byteStream.CompressedRead());
+                currentArchiveNode = savedArchiveNode;
+                currentArchiveClassId = savedArchiveClassId;
+                return 0;
+            }
             int breakArchive = 0;
             if (!SkipOrBreakUnknownChunk(
                         classId,
@@ -315,10 +440,12 @@ int StaticSolidArchiveStream::ParseNodeArchiveInternal(
                                            byteStream.Offset(),
                                            byteStream.CompressedRead());
                 currentArchiveNode = savedArchiveNode;
+                currentArchiveClassId = savedArchiveClassId;
                 return 0;
             }
             if (breakArchive) {
                 currentArchiveNode = savedArchiveNode;
+                currentArchiveClassId = savedArchiveClassId;
                 return 1;
             }
             continue;
@@ -331,6 +458,7 @@ int StaticSolidArchiveStream::ParseNodeArchiveInternal(
                                        byteStream.Offset(),
                                        byteStream.CompressedRead());
             currentArchiveNode = savedArchiveNode;
+            currentArchiveClassId = savedArchiveClassId;
             return 0;
         }
         if (classId == TMNF_CLASS_CPlugSolid) {
@@ -346,6 +474,7 @@ int StaticSolidArchiveStream::ParseNodeArchiveInternal(
                                        byteStream.Offset(),
                                        byteStream.CompressedRead());
             currentArchiveNode = savedArchiveNode;
+            currentArchiveClassId = savedArchiveClassId;
             return 0;
         }
     }
@@ -376,6 +505,12 @@ int StaticSolidArchiveStream::OpenDecodedPayload(
     }
     cmwIdState.ResetSharedNameCache(
             StaticSolidArchiveSharedNameCacheCapacity);
+    vehicleStructState.Reset();
+    trafficGraphState.Reset();
+    animationMotionState.Reset();
+    currentArchiveNode = ArchiveNodeReference::Invalid();
+    currentArchiveClassId = 0u;
+    archiveNodeCountLimit = 0u;
     materialStore = store;
     archiveModels = archiveModelsIn;
     payload = selectedPayload;
@@ -396,6 +531,12 @@ int StaticSolidArchiveStream::OpenEncryptedFeedbackPayload(
     }
     cmwIdState.ResetSharedNameCache(
             StaticSolidArchiveSharedNameCacheCapacity);
+    vehicleStructState.Reset();
+    trafficGraphState.Reset();
+    animationMotionState.Reset();
+    currentArchiveNode = ArchiveNodeReference::Invalid();
+    currentArchiveClassId = 0u;
+    archiveNodeCountLimit = 0u;
     materialStore = store;
     archiveModels = archiveModelsIn;
     payload = selectedPayload;
@@ -405,7 +546,13 @@ int StaticSolidArchiveStream::OpenEncryptedFeedbackPayload(
                                                    &feedback);
 }
 
-int StaticSolidArchiveStream::ParseRootNodeArchive(u32 maxPayloadByteCount) {
+int StaticSolidArchiveStream::ParseRootNodeArchive(
+        u32 maxPayloadByteCount,
+        u32 *rootClassIdOut) {
+    if (rootClassIdOut == nullptr) {
+        return 0;
+    }
+    *rootClassIdOut = 0u;
     CGameCtnReplayStaticSolidArchiveRootHeader header;
     if (!CGameCtnReplayStaticSolidArchiveRootReader::ReadGbxRootArchive(
                 &byteStream,
@@ -419,6 +566,8 @@ int StaticSolidArchiveStream::ParseRootNodeArchive(u32 maxPayloadByteCount) {
     archiveNodeGraph.MarkInlineNode(
             ArchiveNodeReference::FromIndex(0u),
             header.classId);
+    archiveNodeCountLimit = header.numNodes;
+    *rootClassIdOut = header.classId;
     decodeProgress.MarkBodyOffsetParsed();
     return ParseNodeArchive(ArchiveNodeReference::FromIndex(0u),
                             header.classId,
@@ -468,22 +617,53 @@ int StaticSolidArchiveStream::ParseEncryptedPayloadToEnd(
         return 0;
     }
     int ok = 0;
-    if (ParseRootNodeArchive(maxPayloadByteCount)) {
-        ok = byteStream.Skip(maxPayloadByteCount - byteStream.Offset()) &&
+    u32 rootClassId = 0u;
+    if (ParseRootNodeArchive(maxPayloadByteCount, &rootClassId) &&
+        byteStream.Offset() <= maxPayloadByteCount) {
+        const int completeRoot =
+                RequiresCompleteArchiveSemantics(rootClassId);
+        ok = (!completeRoot ||
+              byteStream.Offset() == maxPayloadByteCount) &&
+             (completeRoot ||
+              byteStream.Skip(maxPayloadByteCount - byteStream.Offset())) &&
              byteStream.Produced() == maxPayloadByteCount &&
-             byteStream.Failed() == 0 &&
+             byteStream.FinishExactPayload() &&
              decoded->TrimToByteCount(byteStream.Produced());
     }
     decodeProgress.CaptureStats(feedback, statsOut);
     return ok;
 }
 
+int StaticSolidArchiveStream::ParseEncryptedReferenceTableHeader(
+        u32 maxPayloadByteCount,
+        CGameCtnReplayStaticSolidDecodedPayload *decoded) {
+    if (decoded == nullptr) {
+        return 0;
+    }
+    CGameCtnReplayStaticSolidArchiveRootHeader header;
+    if (!CGameCtnReplayStaticSolidArchiveRootReader::ReadGbxRootArchive(
+                &byteStream,
+                &archiveNodeGraph,
+                &externalFolders,
+                maxPayloadByteCount,
+                &header)) {
+        return 0;
+    }
+    return decoded->TrimToByteCount(byteStream.Produced());
+}
+
 int StaticSolidArchiveStream::ParseDecodedPayloadToEnd(
         u32 decodedByteCount,
         CGameCtnReplayStaticSolidArchiveDecodeStats *statsOut) {
     int ok = 0;
-    if (ParseRootNodeArchive(decodedByteCount)) {
-        ok = byteStream.Skip(decodedByteCount - byteStream.Offset()) &&
+    u32 rootClassId = 0u;
+    if (ParseRootNodeArchive(decodedByteCount, &rootClassId) &&
+        byteStream.Offset() <= decodedByteCount) {
+        const int completeRoot =
+                RequiresCompleteArchiveSemantics(rootClassId);
+        ok = (!completeRoot || byteStream.Offset() == decodedByteCount) &&
+             (completeRoot ||
+              byteStream.Skip(decodedByteCount - byteStream.Offset())) &&
              byteStream.Offset() == decodedByteCount &&
              byteStream.Failed() == 0;
     }
@@ -524,18 +704,18 @@ int CGameCtnReplayStaticSolidArchivePayloadReader::DecodeWithStreamFeedback(
         StaticSolidArchiveId payload,
         CGameCtnReplayStaticSolidDecodedPayload *decodedOut,
         CGameCtnReplayStaticSolidArchiveDecodeStats *statsOut) {
-    if (!rawPayload.IsAvailable() ||
-        decodedOut == nullptr ||
+    if (decodedOut != nullptr) {
+        decodedOut->Clear();
+    }
+    if (statsOut != nullptr) {
+        statsOut->Clear();
+    }
+    if (!rawPayload.IsAvailable() || decodedOut == nullptr ||
         !payloadAsset.IsEncrypted() ||
         payloadAsset.UncompressedByteCount() == 0u ||
         rawPayload.ByteCount() < payloadAsset.RawByteCount()) {
         return 0;
     }
-    decodedOut->Clear();
-    if (statsOut != nullptr) {
-        statsOut->Clear();
-    }
-
     CGameCtnReplayStaticSolidDecodedPayload decoded;
     if (!decoded.ResizeForDecode(payloadAsset.UncompressedByteCount())) {
         return 0;
@@ -563,6 +743,46 @@ int CGameCtnReplayStaticSolidArchivePayloadReader::DecodeWithStreamFeedback(
     if (!stream.ParseEncryptedPayloadToEnd(payloadAsset.UncompressedByteCount(),
                                            &decoded,
                                            statsOut)) {
+        return 0;
+    }
+    decodedOut->TakeFrom(&decoded);
+    return 1;
+}
+
+int CGameCtnReplayStaticSolidArchivePayloadReader::
+DecodeReferenceTablePrefixWithStreamFeedback(
+        const SNat128 &key,
+        const StaticSolidArchivePayload &payloadAsset,
+        StaticSolidArchiveRawBytes rawPayload,
+        CGameCtnReplayStaticSolidDecodedPayload *decodedOut) {
+    if (decodedOut != nullptr) {
+        decodedOut->Clear();
+    }
+    if (!rawPayload.IsAvailable() || decodedOut == nullptr ||
+        !payloadAsset.IsEncrypted() ||
+        payloadAsset.UncompressedByteCount() == 0u ||
+        rawPayload.ByteCount() < payloadAsset.RawByteCount()) {
+        return 0;
+    }
+    CGameCtnReplayStaticSolidDecodedPayload decoded;
+    if (!decoded.ResizeForDecode(payloadAsset.UncompressedByteCount())) {
+        return 0;
+    }
+    auto reader = CClassicBufferCrypted::CreateBlowfishReaderForMemory(
+            rawPayload.Bytes(), rawPayload.ByteCount(), 8ul, key);
+    if (reader == nullptr) {
+        return 0;
+    }
+    StaticSolidArchiveStream stream{};
+    if (!stream.OpenEncryptedFeedbackPayload(
+                &payloadAsset,
+                reader.get(),
+                decoded.MutableBytes(),
+                nullptr,
+                nullptr,
+                StaticSolidArchiveId::Invalid()) ||
+        !stream.ParseEncryptedReferenceTableHeader(
+                payloadAsset.UncompressedByteCount(), &decoded)) {
         return 0;
     }
     decodedOut->TakeFrom(&decoded);

@@ -53,7 +53,13 @@ struct BlockInfoSizeParseStream {
     int SkipNodRefPayload(ArchiveNodeReference sourceNode);
     int SkipCountedNodRefs();
     static int WordIsSceneObjectLinkChunk(u32 word);
-    int SkipInlineMotionToSceneChunk();
+    int ParseInlineMotionArchive(ArchiveNodeReference rootNode,
+                                 u32 rootClassId,
+                                 int *changesLocationsOut = nullptr,
+                                 int *collisionUsesInitialTransformOut = nullptr);
+    int ParseInlineCMotionsArchive(ArchiveNodeReference rootNode,
+                                   int *changesLocationsOut = nullptr,
+                                   int *collisionUsesInitialTransformOut = nullptr);
     int ReadBlockInfoSourceRef(char *descriptorOut, size_t descriptorOutSize);
     int SkipMobilRefArray();
     int ParseUnitNode(u32 outOffset[3],

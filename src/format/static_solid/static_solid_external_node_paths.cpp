@@ -110,6 +110,16 @@ int CGameCtnReplayStaticSolidExternalNodePathResolver::BuildPlainPath(
         const CGameCtnReplayStaticSolidExternalNodeRef &nodeRef,
         int requirePresent,
         CGameCtnReplayStaticSolidExternalNodePathResult *resultOut) {
+    return BuildPlainPath(
+            folders, nullptr, nodeRef, requirePresent, resultOut);
+}
+
+int CGameCtnReplayStaticSolidExternalNodePathResolver::BuildPlainPath(
+        const SceneDescriptorFolderPaths *folders,
+        const CPlugFilePack *pack,
+        const CGameCtnReplayStaticSolidExternalNodeRef &nodeRef,
+        int requirePresent,
+        CGameCtnReplayStaticSolidExternalNodePathResult *resultOut) {
     if (resultOut == nullptr) {
         return 0;
     }
@@ -125,6 +135,7 @@ int CGameCtnReplayStaticSolidExternalNodePathResolver::BuildPlainPath(
         !SceneDescriptorFolderPaths::BuildPackRefFullPath(
                 folder,
                 nodeRef.Name().c_str(),
+                pack != nullptr ? pack->PackName().c_str() : "Stadium",
                 plainPath,
                 sizeof(plainPath))) {
         return 0;
@@ -142,6 +153,7 @@ int CGameCtnReplayStaticSolidExternalNodePathResolver::ResolveSelectedPath(
         return 0;
     }
     if (!BuildPlainPath(folders,
+                        pack,
                         nodeRef,
                         requirePresent,
                         resultOut) ||
@@ -169,6 +181,7 @@ BuildPlainAndTrySelectedPath(
         return 0;
     }
     if (!BuildPlainPath(folders,
+                        pack,
                         nodeRef,
                         requirePresent,
                         resultOut)) {

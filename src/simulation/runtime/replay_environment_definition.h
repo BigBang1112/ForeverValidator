@@ -29,8 +29,17 @@ public:
             WaterOccupancy outsideOccupancy,
             float surfaceHeight,
             float secondaryCullHeight);
+    static std::optional<ReplayWaterDefinition> CreateGeometry(
+            const GmVec2 &cellSize,
+            const GmVec2 &origin,
+            const GmNat2 &dimensions,
+            float surfaceHeight,
+            float secondaryCullHeight,
+            const std::vector<GmVec4> &planes);
 
     bool MarkWaterCell(const GmNat2 &cell);
+    bool MarkWaterCell(const GmNat2 &cell, std::uint8_t planeIndex);
+    bool MarkDryCell(const GmNat2 &cell);
     const WaterOccupancyGrid &OccupancyGrid(void) const {
         return occupancy_;
     }

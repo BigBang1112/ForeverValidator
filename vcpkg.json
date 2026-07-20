@@ -1,0 +1,8 @@
+{
+  "name": "forevervalidator",
+  "version-string": "2.0.0",
+  "dependencies": [
+    "openssl",
+    "zlib"
+  ]
+}

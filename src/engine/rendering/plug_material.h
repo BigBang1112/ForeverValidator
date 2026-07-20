@@ -7,6 +7,7 @@
 
 #include "engine/core/engine_types.h"
 #include "engine/rendering/plug.h"
+#include "engine/game/material_render_definition.h"
 #include "engine/game/surface_material.h"
 #include "engine/rendering/plug_bitmap_render.h"
 #include "engine/rendering/plug_shader.h"
@@ -97,6 +98,9 @@ struct CPlugMaterial : CPlug {
     void SetMaterialCustom(CPlugMaterialCustom *materialCustom);
     EPlugSurfaceMaterialId SurfaceMaterialId(void) const;
     void SetSurfaceMaterialId(EPlugSurfaceMaterialId materialId);
+    void SetReplayRenderDefinition(
+            const MaterialRenderDefinition &definition);
+    const MaterialRenderDefinition &ReplayRenderDefinition(void) const;
     void ModifyTreeBeforeOptim(CPlugTree *tree);
     CPlugMaterial *ModelMaterial(void) const;
     CPlugMaterialCustom *CustomMaterial(void) const;
@@ -111,6 +115,7 @@ private:
     CMwNodRef<CPlugMaterialCustom> customMaterial;
     EPlugSurfaceMaterialId surfaceMaterialId_ =
             EPlugSurfaceMaterialId_Concrete;
+    MaterialRenderDefinition replayRenderDefinition_;
     void CommonConstructor(void);
 };
 

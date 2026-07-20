@@ -285,6 +285,27 @@ CSceneVehicleCarTuning *CSceneVehicleCar::ActiveTuningOrNull(void) const {
   return container != nullptr ? container->ActiveTuning() : nullptr;
 }
 
+void CSceneVehicleCar::OnEnterScene(void) {
+  CSceneVehicle::OnEnterScene();
+  UpdateParamsFromTuning();
+
+  CHmsItem *item = HmsItem();
+  CHmsDyna *dyna = item != nullptr ? item->FirstDyna() : nullptr;
+  if (dyna == nullptr) {
+    return;
+  }
+
+  const CSceneVehicleCarTuning *tuning = ActiveTuningOrNull();
+  if (tuning == nullptr) {
+    return;
+  }
+  const float maximum =
+      tuning->contactResponse.pointImpulseAngularSpeedMax;
+  dyna->SetAngularSpeedLimit(maximum > ScalarEpsilon
+                                 ? std::optional<float>(maximum)
+                                 : std::nullopt);
+}
+
 void CSceneVehicleCar::ResetPlayerControls(void) {
   controls.lowSpeedGateA = 0.0f;
   controls.lowSpeedGateB = 0.0f;

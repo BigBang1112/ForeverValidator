@@ -59,6 +59,7 @@ public:
     u32 Produced() const;
     u32 CompressedRead() const;
     int Failed() const;
+    int FinishExactPayload();
 
 private:
     static constexpr u32 OutputWindowCapacity = 0x400u;
@@ -83,7 +84,7 @@ private:
     int zlibEof = 0;
     int failed = 0;
 
-    int IsDefaultVehicleTunings() const;
+    int IsVehicleTunings() const;
     int PrefetchVehicleCompressedPage();
     int ReadEncryptedCompressedPage();
     int FillWindow();

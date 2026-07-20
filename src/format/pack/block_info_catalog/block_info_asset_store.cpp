@@ -10,6 +10,7 @@
 #include "format/archive/gm_wire_conversion.h"
 #include "format/archive/hms_item_archive_state.h"
 #include "format/archive/mw_id_archive_codec.h"
+#include "format/archive/archive_class_ids.h"
 #include <new>
 namespace {
 
@@ -28,8 +29,8 @@ std::unique_ptr<CGameCtnBlockUnitInfo> MaterializeUnit(
             {static_cast<u32>(source.offset.x),
              static_cast<u32>(source.offset.y),
              static_cast<u32>(source.offset.z)},
-            0u,
-            0u,
+            source.helperMask,
+            source.junctionMask,
             &owner);
     unit->SetUnderground(source.underground);
     CMwId terrainModifierId;
@@ -145,7 +146,7 @@ void MaterializeMobilFamilies(
     }
 }
 
-void MaterializeModel(
+CSceneMobil *MaterializeModel(
         CGameCtnBlockInfo &blockInfo,
         const BlockInfoParsedMobil &model,
         StaticSolidArchiveReferenceCatalog &references) {
@@ -162,6 +163,9 @@ void MaterializeModel(
         mobil->StaticSolidAsset() = MobilStaticSolid(model, references);
         InstallInitialPhysicsState(*mobil, model);
     }
+    mobil->SetReplayMotionChangesLocations(model.motionChangesLocations != 0u);
+    mobil->SetReplayCollisionUsesInitialTransform(
+            model.collisionUsesInitialTransform != 0u);
 
     blockInfo.AddSourceMobil(mobil);
     if (model.isSceneObjectLinkMobil != 0u) {
@@ -180,6 +184,43 @@ void MaterializeModel(
                blockInfo.CommonHelperMobilSource() == nullptr) {
         blockInfo.SetCommonHelperMobilSource(mobil);
     }
+    return mobil;
+}
+
+bool MaterializeArchiveLocalMobilAliases(
+        CGameCtnBlockInfo &blockInfo,
+        const BlockInfoParsedMobilCollection &models) {
+    for (const BlockInfoParsedMobilAlias &alias :
+         models.ArchiveLocalAliases()) {
+        if (alias.source.selectorGroup > 1u ||
+            alias.target.selectorGroup > 1u) {
+            return false;
+        }
+        CFastBuffer<CSceneMobil *> *sourceVariant =
+                blockInfo.GetMobilBuffer(
+                        static_cast<int>(alias.source.selectorGroup),
+                        alias.source.variantIndex);
+        CFastBuffer<CSceneMobil *> *targetVariant =
+                blockInfo.GetMobilBuffer(
+                        static_cast<int>(alias.target.selectorGroup),
+                        alias.target.variantIndex);
+        if (sourceVariant == nullptr || targetVariant == nullptr ||
+            alias.source.mobilIndex >= sourceVariant->GetCount() ||
+            alias.target.mobilIndex >= targetVariant->GetCount()) {
+            return false;
+        }
+        CSceneMobil *source = (*sourceVariant)[alias.source.mobilIndex];
+        if (source == nullptr) {
+            // An optional inline node may parse without producing a mobil.
+            // Keep the target unresolved instead of failing the BlockInfo.
+            continue;
+        }
+        blockInfo.SetMobil(alias.target.mobilIndex,
+                           static_cast<int>(alias.target.selectorGroup),
+                           alias.target.variantIndex,
+                           source);
+    }
+    return true;
 }
 
 CSceneMobil *MaterializeHelperPlaceholder(
@@ -197,10 +238,22 @@ CSceneMobil *MaterializeHelperPlaceholder(
 CMwNodRef<CGameCtnBlockInfo> MaterializeBlockInfo(
         const BlockInfoDescriptorParseResult &descriptor,
         const BlockInfoParsedMobilCollection &models,
+        BlockInfoAssetHandle sourceAsset,
         BlockInfoAssetStore &assets,
         StaticSolidArchiveReferenceCatalog &references) {
-    CMwNodRef<CGameCtnBlockInfo> blockInfo =
-            MakeMwNod<CGameCtnBlockInfo>();
+    CGameCtnBlockInfo *materialized = nullptr;
+    if (descriptor.descriptorClassId ==
+        TMNF_CLASS_CGameCtnBlockInfoPylon) {
+        materialized = new CGameCtnBlockInfoPylon();
+    } else if (descriptor.descriptorClassId ==
+               TMNF_CLASS_CGameCtnBlockInfoClip) {
+        auto *clip = new CGameCtnBlockInfoClip();
+        clip->SetSourceAsset(sourceAsset);
+        materialized = clip;
+    } else {
+        materialized = new CGameCtnBlockInfo();
+    }
+    CMwNodRef<CGameCtnBlockInfo> blockInfo(materialized);
     blockInfo->SetMobilFamilySize(true,
                                  NaturalSize(descriptor.SizeWhenGround()));
     blockInfo->SetMobilFamilySize(false,
@@ -233,11 +286,59 @@ CMwNodRef<CGameCtnBlockInfo> MaterializeBlockInfo(
     }
 
     MaterializeMobilFamilies(*blockInfo, descriptor, references);
+    std::array<CSceneMobil *, 3> parsedPylonSources{};
     for (u32 index = 0u; index < models.Count(); ++index) {
         const BlockInfoParsedMobil *model = models.ModelAt(index);
         if (model != nullptr &&
             model->descriptorPath == descriptor.descriptorPath) {
-            MaterializeModel(*blockInfo, *model, references);
+            CSceneMobil *mobil =
+                    MaterializeModel(*blockInfo, *model, references);
+            if (model->selectorGroup >= 5u &&
+                model->selectorGroup <= 7u &&
+                model->isSceneObjectLinkMobil == 0u) {
+                CSceneMobil *&source = parsedPylonSources[
+                        model->selectorGroup - 5u];
+                if (source != nullptr && source != mobil) {
+                    return {};
+                }
+                source = mobil;
+            }
+        }
+    }
+    if (!MaterializeArchiveLocalMobilAliases(*blockInfo, models)) {
+        return {};
+    }
+    if (auto *pylon = dynamic_cast<CGameCtnBlockInfoPylon *>(
+                blockInfo.Get())) {
+        if (!descriptor.parsedPylonSourceChunk) {
+            return {};
+        }
+        std::array<CSceneMobil *, 3> sources{};
+        std::size_t sourceCount = 0u;
+        for (std::size_t index = 0u; index < sources.size(); ++index) {
+            const auto &slot = descriptor.pylonSourceMobils[index];
+            if (!slot.has_value()) {
+                continue;
+            }
+            sourceCount++;
+            sources[index] = slot->selectorGroup <= 1u
+                    ? blockInfo->GetMobil(
+                              static_cast<int>(slot->selectorGroup),
+                              slot->variantIndex,
+                              slot->mobilIndex)
+                    : slot->selectorGroup >= 5u &&
+                                      slot->selectorGroup <= 7u
+                            ? parsedPylonSources[slot->selectorGroup - 5u]
+                            : nullptr;
+            if (sources[index] == nullptr) {
+                return {};
+            }
+        }
+        if (sourceCount != 0u && sourceCount != sources.size()) {
+            return {};
+        }
+        if (sourceCount == sources.size()) {
+            pylon->SetSourceMobils(sources[0], sources[1], sources[2]);
         }
     }
     blockInfo->SetFamilyHelperMobilSource(
@@ -327,13 +428,32 @@ CGameCtnBlockInfo *BlockInfoAssetStore::Load(
         lastLoadFailureReason = "descriptor-parse";
         return nullptr;
     }
-    if (!includeArchiveModels) {
+    if (parsed->descriptor.descriptorClassId ==
+            TMNF_CLASS_CGameCtnBlockInfoPylon) {
+        BlockInfoDescriptorParseRequest pylonRequest = parseRequest;
+        pylonRequest.continueAfterMainBlockInfoChunk = true;
+        parsed = BlockInfoDescriptorMobilParser::ParseDescriptorAndModels(
+                pylonRequest);
+        if (!parsed.has_value() ||
+            !parsed->descriptor.parsedPylonSourceChunk) {
+            lastLoadFailureReason = "descriptor-parse";
+            return nullptr;
+        }
+    } else if (!includeArchiveModels) {
+        bool wrongRootPylonChunk = false;
+        BlockInfoDescriptorParseRequest helperRequest = parseRequest;
+        helperRequest.wrongRootPylonChunkOut = &wrongRootPylonChunk;
         BlockInfoDescriptorMobilParser::TryParseHelperPaths(
-                parseRequest, parsed->descriptor);
+                helperRequest, parsed->descriptor);
+        if (wrongRootPylonChunk) {
+            lastLoadFailureReason = "descriptor-parse";
+            return nullptr;
+        }
     }
     CMwNodRef<CGameCtnBlockInfo> blockInfo =
             MaterializeBlockInfo(parsed->descriptor,
                                  parsed->models,
+                                 asset,
                                  *this,
                                  solidReferences);
     if (blockInfo.Get() == nullptr) {

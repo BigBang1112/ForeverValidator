@@ -21,11 +21,22 @@ enum class CSceneMobilArchiveChunkId : u32 {
     MessageHandlerRef = 0x0a011006u,
 };
 
+enum class CSceneMobilLeavesArchiveChunkId : u32 {
+    Legacy = 0x0a05e000u,
+    LegacyWithoutFinalScalar = 0x0a05e001u,
+    LegacyWithFinalScalar = 0x0a05e002u,
+    Root = 0x0a05e003u,
+};
+
 constexpr u32 ArchiveChunkIdValue(CSceneObjectArchiveChunkId chunkId) {
     return static_cast<u32>(chunkId);
 }
 
 constexpr u32 ArchiveChunkIdValue(CSceneMobilArchiveChunkId chunkId) {
+    return static_cast<u32>(chunkId);
+}
+
+constexpr u32 ArchiveChunkIdValue(CSceneMobilLeavesArchiveChunkId chunkId) {
     return static_cast<u32>(chunkId);
 }
 
@@ -52,6 +63,22 @@ constexpr int IsCSceneMobilInfo3Chunk(u32 chunkId) {
     return chunkId == ArchiveChunkIdValue(CSceneMobilArchiveChunkId::ChildObjects) ||
            chunkId == ArchiveChunkIdValue(CSceneMobilArchiveChunkId::HmsItemData) ||
            chunkId == ArchiveChunkIdValue(CSceneMobilArchiveChunkId::MessageHandlerRef);
+}
+
+constexpr int IsCSceneMobilLeavesInfo1Chunk(u32 chunkId) {
+    return chunkId == ArchiveChunkIdValue(
+                              CSceneMobilLeavesArchiveChunkId::Legacy) ||
+           chunkId == ArchiveChunkIdValue(
+                              CSceneMobilLeavesArchiveChunkId::
+                                      LegacyWithoutFinalScalar) ||
+           chunkId == ArchiveChunkIdValue(
+                              CSceneMobilLeavesArchiveChunkId::
+                                      LegacyWithFinalScalar);
+}
+
+constexpr int IsCSceneMobilLeavesInfo3Chunk(u32 chunkId) {
+    return chunkId == ArchiveChunkIdValue(
+                              CSceneMobilLeavesArchiveChunkId::Root);
 }
 
 constexpr int IsCSceneObjectDescriptorMobilTailChunk(u32 chunkId) {

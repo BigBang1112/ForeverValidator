@@ -102,4 +102,12 @@ private:
     std::vector<CGameCtnReplayMapInputBlock> blocks;
 };
 
+bool ReplayMapAuthoredCoordinatesFit(
+        const CGameCtnReplayMapInput &mapInput,
+        const GmNat3 &mapSize);
+
+bool ReplayDecorationSizeMatchesMap(
+        const CGameCtnReplayMapInput &mapInput,
+        const GmNat3 &decorationSize);
+
 #endif

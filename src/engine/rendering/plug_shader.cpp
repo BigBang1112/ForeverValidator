@@ -4,6 +4,7 @@
 #include "engine/rendering/plug_bitmap.h"
 #include "engine/rendering/plug_bitmap_render.h"
 #include "engine/resources/system_pack_desc.h"
+#include "format/archive/archive_class_ids.h"
 CPlugBitmapAddress::CPlugBitmapAddress(void) = default;
 CPlugBitmapAddress::~CPlugBitmapAddress(void) = default;
 
@@ -287,20 +288,29 @@ bool CPlugShader::IsVisionDirty(void) const {
     return visionDirty_;
 }
 
-CPlugBitmapRenderScene3d *CPlugShader::FindScene3dBitmapRender(
+void CPlugShader::SetArchiveFlags(u32 flags) {
+    archiveFlags_ = flags;
+}
+
+u32 CPlugShader::ArchiveFlags(void) const {
+    return archiveFlags_;
+}
+
+CPlugBitmapRender *CPlugShader::FindBitmapRenderByClassId(
+        unsigned long classId,
         CPlugBitmap **outBitmap,
         CPlugBitmapAddress **outAddress) {
     for (u32 layerIndex = 0u;
          layerIndex < GetRenderBeforeCount(); ++layerIndex) {
         CPlugBitmapAddress *address = GetRenderBeforeAt(layerIndex);
         CPlugBitmap *bitmap = address != nullptr ? address->Bitmap() : nullptr;
-        if (bitmap == nullptr) {
-            continue;
-        }
-        CPlugBitmapRenderScene3d *render =
-                dynamic_cast<CPlugBitmapRenderScene3d *>(
-                        bitmap->RenderPayload());
-        if (render == nullptr) {
+        CPlugBitmapRender *render =
+                bitmap != nullptr &&
+                        bitmap->PixelUpdateKind() ==
+                                CPlugBitmap::PixelUpdate_Render
+                ? bitmap->RenderPayload()
+                : nullptr;
+        if (render == nullptr || !render->MwIsKindOf(classId)) {
             continue;
         }
         if (outBitmap != nullptr) {

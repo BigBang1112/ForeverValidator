@@ -5,7 +5,11 @@
 
 enum class CGameCtnCollectionArchiveChunkId : uint32_t {
     ZoneBufferRefs = 0x03033009u,
-    SurfaceReplacementPairs = 0x0303301du
+    SurfaceReplacementPairs = 0x0303301du,
+    WaterHeightsAndDefault = 0x0303301eu,
+    SeaHouleFiles = 0x0303301fu,
+    WaterUsesGeometryPlanes = 0x03033022u,
+    DecorationTerrainModifiers = 0x03033023u,
 };
 
 constexpr uint32_t ArchiveChunkIdValue(

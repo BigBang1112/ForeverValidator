@@ -81,6 +81,13 @@ const char *ValidationFailureReasonName(
     REASON_NAME(DefaultVehicleUnavailable, "default_vehicle_unavailable");
     REASON_NAME(AssetRepositoryUnavailable, "asset_repository_unavailable");
     REASON_NAME(AssetPathEscapesRoot, "asset_path_escapes_root");
+    REASON_NAME(InstalledPackMissing, "installed_pack_missing");
+    REASON_NAME(InstalledPackInvalid, "installed_pack_invalid");
+    REASON_NAME(UnsupportedMapEnvironmentIdentifier,
+                "unsupported_map_environment_identifier");
+    REASON_NAME(UnsupportedVehicleIdentifier,
+                "unsupported_vehicle_identifier");
+    REASON_NAME(UnsupportedPlayMode, "unsupported_play_mode");
     REASON_NAME(ReplayFileOpenFailed, "replay_file_open_failed");
     REASON_NAME(ReplayFileLengthInvalid, "replay_file_length_invalid");
     REASON_NAME(ReplayFileReadFailed, "replay_file_read_failed");
@@ -163,6 +170,46 @@ const char *ValidationFailureReasonName(
     }
 #undef REASON_NAME
     return "unexpected_failure";
+}
+
+const char *MapEnvironmentName(MapEnvironment environment) noexcept {
+    switch (environment) {
+    case MapEnvironment::Alpine: return "Alpine";
+    case MapEnvironment::Speed: return "Speed";
+    case MapEnvironment::Rally: return "Rally";
+    case MapEnvironment::Island: return "Island";
+    case MapEnvironment::Coast: return "Coast";
+    case MapEnvironment::Bay: return "Bay";
+    case MapEnvironment::Stadium: return "Stadium";
+    case MapEnvironment::Unknown: return "Unknown";
+    }
+    return "Unknown";
+}
+
+const char *VehicleModelName(VehicleModel vehicle) noexcept {
+    switch (vehicle) {
+    case VehicleModel::SnowCar: return "SnowCar";
+    case VehicleModel::DesertCar: return "DesertCar";
+    case VehicleModel::RallyCar: return "RallyCar";
+    case VehicleModel::IslandCar: return "IslandCar";
+    case VehicleModel::CoastCar: return "CoastCar";
+    case VehicleModel::BayCar: return "BayCar";
+    case VehicleModel::StadiumCar: return "StadiumCar";
+    case VehicleModel::Unknown: return "Unknown";
+    }
+    return "Unknown";
+}
+
+const char *PlayModeName(PlayMode mode) noexcept {
+    switch (mode) {
+    case PlayMode::Race: return "Race";
+    case PlayMode::Platform: return "Platform";
+    case PlayMode::Puzzle: return "Puzzle";
+    case PlayMode::Crazy: return "Crazy";
+    case PlayMode::Shortcut: return "Shortcut";
+    case PlayMode::Stunts: return "Stunts";
+    }
+    return "Unknown";
 }
 
 int ValidationLegacyParserCode(ValidationFailureReason reason) noexcept {

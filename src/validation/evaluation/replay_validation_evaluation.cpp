@@ -1,5 +1,6 @@
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <vector>
 
@@ -147,12 +148,21 @@ ReplayEvaluationMetadata ResolveActualMetadata(
         std::nullopt,
         static_cast<s32>(simulationResult.executedRespawnCount),
     };
+    if (simulationResult.stuntsScore.has_value() &&
+        *simulationResult.stuntsScore <=
+                static_cast<u32>(std::numeric_limits<s32>::max())) {
+        actual.stuntsScore = static_cast<s32>(
+                *simulationResult.stuntsScore);
+    }
     if (simulationResult.finishTimeMs.has_value() &&
         *simulationResult.finishTimeMs >= plan.validationPrestartMs) {
         actual.raceCompleted = true;
         actual.raceTimeMs = static_cast<s32>(
                 *simulationResult.finishTimeMs - plan.validationPrestartMs);
-    } else if (simulatedFinishRaceTimeMs.has_value()) {
+    } else if (plan.validationMode != ReplayValidationMode::Platform &&
+               plan.validationMode != ReplayValidationMode::Puzzle &&
+               plan.validationMode != ReplayValidationMode::Stunts &&
+               simulatedFinishRaceTimeMs.has_value()) {
         actual.raceCompleted = true;
         actual.raceTimeMs = simulatedFinishRaceTimeMs;
     }
@@ -171,9 +181,48 @@ void FinalizeValidation(
         output.outcome = ReplayValidationOutcome::Unavailable;
         return;
     }
+    if ((plan.validationMode == ReplayValidationMode::Platform ||
+         plan.validationMode == ReplayValidationMode::Puzzle) &&
+        (!plan.expectedRaceTimeMs.has_value() ||
+         *plan.expectedRaceTimeMs < 0)) {
+        output.status = ReplayValidationStatus::ObservationError;
+        output.outcome = ReplayValidationOutcome::Error;
+        output.observationError =
+                ReplayObservationError::ReplayMetadataUnavailable;
+        return;
+    }
+    if (plan.validationMode == ReplayValidationMode::Stunts &&
+        (!plan.expectedStuntsScore.has_value() ||
+         *plan.expectedStuntsScore < 0)) {
+        output.status = ReplayValidationStatus::ObservationError;
+        output.outcome = ReplayValidationOutcome::Error;
+        output.observationError =
+                ReplayObservationError::ReplayMetadataUnavailable;
+        return;
+    }
+    if (plan.validationMode == ReplayValidationMode::Stunts &&
+        !plan.expectedRespawns.has_value()) {
+        output.status = ReplayValidationStatus::RespawnExpectationUnavailable;
+        output.outcome = ReplayValidationOutcome::Unavailable;
+        return;
+    }
+    if ((plan.validationMode == ReplayValidationMode::Platform ||
+         plan.validationMode == ReplayValidationMode::Puzzle) &&
+        !plan.expectedRespawns.has_value()) {
+        output.status = ReplayValidationStatus::RespawnExpectationUnavailable;
+        output.outcome = ReplayValidationOutcome::Unavailable;
+        return;
+    }
     if (!actual.raceCompleted.has_value()) {
         output.status = ReplayValidationStatus::RaceCompletionUnavailable;
         output.outcome = ReplayValidationOutcome::Unavailable;
+        return;
+    }
+    if ((plan.validationMode == ReplayValidationMode::Platform ||
+         plan.validationMode == ReplayValidationMode::Puzzle) &&
+        !*actual.raceCompleted) {
+        output.status = ReplayValidationStatus::ExpectingCompletedRace;
+        output.outcome = ReplayValidationOutcome::Invalid;
         return;
     }
     ReplayValidationExpectations expectedComparison{

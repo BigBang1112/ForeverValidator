@@ -115,6 +115,7 @@ public:
     void ApplyToMaterial(CPlugMaterial *material) const;
     MaterialAssetHandle Asset() const;
     const MaterialSurfaceDefinition &Surface() const;
+    const MaterialRenderDefinition &Render() const;
     const MaterialRemapCollection &Remaps() const;
 
 private:
@@ -122,6 +123,7 @@ private:
             CGameCtnReplayStaticSolidArchiveNodeIdentity::Invalid();
     MaterialAssetHandle asset;
     MaterialSurfaceDefinition surface;
+    MaterialRenderDefinition render;
     MaterialRemapCollection remaps;
 };
 

@@ -1,76 +1,13 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
-#include <optional>
 
 #include "validation/evaluation/replay_validation_session.h"
 #include "simulation/control/replay_control_plan.h"
 #include "simulation/runtime/replay_simulation_session.h"
+#include "validation/evaluation/replay_recorded_input_outcome.h"
 #include "validation/evaluation/replay_validation_evaluation.h"
 namespace {
-
-struct ReplayRecordedInputOutcome {
-    std::optional<std::int32_t> finishRaceTimeMs;
-    std::uint32_t respawnCount = 0u;
-};
-
-ReplayRecordedInputOutcome ObserveRecordedInputOutcome(
-        const ReplayInputTimeline &timeline,
-        std::uint32_t inputTimeBaseMs) {
-    ReplayRecordedInputOutcome outcome;
-    const std::vector<ReplayInputEvent> &events = timeline.Events();
-    for (const ReplayInputEvent &event : events) {
-        if (event.action == ReplayInputActionKind::Respawn &&
-            event.value.IsActive()) {
-            ++outcome.respawnCount;
-        }
-    }
-
-    const std::optional<std::int32_t> expectedRaceTimeMs =
-            timeline.Metadata().raceTimeMs;
-    if (!expectedRaceTimeMs.has_value() ||
-        *expectedRaceTimeMs < 0 ||
-        events.empty()) {
-        return outcome;
-    }
-    const std::uint64_t expectedInputTimeMs =
-            static_cast<std::uint64_t>(inputTimeBaseMs) +
-            static_cast<std::uint32_t>(*expectedRaceTimeMs);
-    if (expectedInputTimeMs >
-        std::numeric_limits<std::uint32_t>::max()) {
-        return outcome;
-    }
-    const ReplayInputEvent &finalEvent = events.back();
-    if (finalEvent.action == ReplayInputActionKind::FinishLine &&
-        finalEvent.value.IsCanonicalPress() &&
-        finalEvent.timeMs == expectedInputTimeMs) {
-        outcome.finishRaceTimeMs = static_cast<std::int32_t>(
-                finalEvent.timeMs - inputTimeBaseMs);
-    }
-    return outcome;
-}
-
-bool ApplyRecordedInputOutcome(
-        const ReplayValidationPlan &plan,
-        const ReplayRecordedInputOutcome &recorded,
-        ReplaySimulationTimelineResult *simulationResult) {
-    if (simulationResult == nullptr) {
-        return false;
-    }
-    simulationResult->executedRespawnCount = recorded.respawnCount;
-    if (!recorded.finishRaceTimeMs.has_value()) {
-        return true;
-    }
-    const std::uint64_t finishTickMs =
-            static_cast<std::uint64_t>(plan.validationPrestartMs) +
-            static_cast<std::uint32_t>(*recorded.finishRaceTimeMs);
-    if (finishTickMs > std::numeric_limits<std::uint32_t>::max()) {
-        return false;
-    }
-    simulationResult->raceCompleted = true;
-    simulationResult->finishTimeMs = static_cast<std::uint32_t>(finishTickMs);
-    return true;
-}
 
 ReplayValidationExecutionResult FromControlPlanResult(
         ReplayControlPlanBuildResult result) {
@@ -184,6 +121,8 @@ ReplayValidationExecutionResult ExecuteReplayValidation(
         return ReplayValidationExecutionResult::InvalidControlPlan;
     }
 
+    simulationSession.ConfigureReplayRace(
+            plan.playMode, plan.isLapRace, plan.lapCount);
     ReplaySimulationTimelineResult simulationResult =
             simulationSession.SimulateTimeline(
                     simulationDefinition,
@@ -192,12 +131,27 @@ ReplayValidationExecutionResult ExecuteReplayValidation(
     if (simulationResult.result != ReplaySimulationRunResult::Success) {
         return FromSimulationResult(simulationResult.result);
     }
-    // TMNF validation playback still runs the world and vehicle. The replay's
-    // final fake-finish and respawn events carry the recorded race outcome that
-    // the game applies after the physics playback has completed.
+    // Platform, Puzzle, and Stunts carry their recorded outcome in replay
+    // events. Race completion remains authoritative only when the standalone
+    // checkpoint simulation reaches a valid finish.
     const ReplayRecordedInputOutcome recordedOutcome =
-            ObserveRecordedInputOutcome(inputTimeline, plan.inputTimeBaseMs);
-    if (!ApplyRecordedInputOutcome(
+            ObserveReplayRecordedInputOutcome(
+                    inputTimeline, plan.inputTimeBaseMs);
+    if (plan.validationMode == ReplayValidationMode::Stunts &&
+        recordedOutcome.finishRaceTimeMs.has_value() &&
+        static_cast<std::uint32_t>(*recordedOutcome.finishRaceTimeMs) >
+                plan.baseActions.stuntsTimeLimitMs) {
+        const std::uint32_t overtimeMs =
+                static_cast<std::uint32_t>(
+                        *recordedOutcome.finishRaceTimeMs) -
+                plan.baseActions.stuntsTimeLimitMs;
+        simulationResult.stuntsScore =
+                simulationSession.ApplyReplayStuntTimePenalty(overtimeMs);
+        if (!simulationResult.stuntsScore.has_value()) {
+            return ReplayValidationExecutionResult::InvalidPlan;
+        }
+    }
+    if (!ApplyReplayRecordedInputOutcome(
                 plan, recordedOutcome, &simulationResult)) {
         return ReplayValidationExecutionResult::InvalidPlan;
     }

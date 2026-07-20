@@ -31,10 +31,16 @@ struct SceneDescriptorFolderPaths {
     static const char *StadiumMediaSolidPrefix();
     static const char *StadiumMediaMaterialPrefix();
     static int StartsWith(const char *text, const char *prefix);
+    static int IsBlockInfoDescriptorPath(const char *plainPath);
+    static int IsZoneDescriptorPath(const char *plainPath);
     static int IsConstructionBlockInfoPath(const char *plainPath);
     static int IsStadiumMobilPath(const char *plainPath);
     static int IsRacesMobilPath(const char *plainPath);
     static int IsMobilDescriptorPath(const char *plainPath);
+    static int IsMediaSolidPath(const char *plainPath);
+    static int IsMediaMaterialPath(const char *plainPath);
+    static int IsMediaShaderPath(const char *plainPath);
+    static int IsMediaTexturePath(const char *plainPath);
     static int IsStadiumMediaSolidPath(const char *plainPath);
     static int IsStadiumMediaMaterialPath(const char *plainPath);
     static int AppendCString(char *dst, size_t dstSize, const char *src);
@@ -49,6 +55,18 @@ struct SceneDescriptorFolderPaths {
     static int HashStadiumMediaMaterialPath(const char *plainPath,
                                             char *out,
                                             size_t outSize);
+    static int HashMediaSolidPath(const char *plainPath,
+                                  char *out,
+                                  size_t outSize);
+    static int HashMediaMaterialPath(const char *plainPath,
+                                     char *out,
+                                     size_t outSize);
+    static int HashMediaShaderPath(const char *plainPath,
+                                   char *out,
+                                   size_t outSize);
+    static int HashMediaTexturePath(const char *plainPath,
+                                    char *out,
+                                    size_t outSize);
     static int HashMobilDescriptorPath(const char *plainPath,
                                        char *out,
                                        size_t outSize);
@@ -88,6 +106,11 @@ struct SceneDescriptorFolderPaths {
     }
     static int BuildPackRefFullPath(const char *folder,
                                     const char *name,
+                                    char *out,
+                                    size_t outSize);
+    static int BuildPackRefFullPath(const char *folder,
+                                    const char *name,
+                                    const char *packRoot,
                                     char *out,
                                     size_t outSize);
 };

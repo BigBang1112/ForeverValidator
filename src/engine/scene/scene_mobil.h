@@ -78,6 +78,7 @@ public:
     virtual CSceneMobil *CreateModelInstance(void);
     virtual void DisconnectFromModel(void);
     virtual void SetSolid(CPlugSolid *solid);
+    virtual int DoesMotionChangeLocations(void);
     CSceneMobil *GetModel(void);
     void SetMessageHandler(CSceneMessageHandler *handler);
     unsigned long LinkFind(CSceneObjectLink *link) const;
@@ -107,6 +108,9 @@ public:
     void SetInitialItemProperties(const CHmsItem::Properties &properties);
     const std::optional<CHmsItem::Properties> &InitialItemProperties(void) const;
     const std::vector<CMwNodRef<CSceneObjectLink>> &Links(void) const;
+    void SetReplayMotionChangesLocations(int changesLocations);
+    void SetReplayCollisionUsesInitialTransform(int usesInitialTransform);
+    int ReplayCollisionUsesInitialTransform(void) const;
 
 protected:
     virtual void HmsComputeForces(float dt);
@@ -129,6 +133,8 @@ private:
     CMwNodRef<CSceneMessageHandler> messageHandler;
     StaticSolidAssetReference staticSolidAsset;
     std::optional<CHmsItem::Properties> initialItemProperties;
+    bool replayMotionChangesLocations = false;
+    bool replayCollisionUsesInitialTransform = false;
 
     bool absorbContactEnabled = false;
     bool physicsUpdatesEnabled = false;

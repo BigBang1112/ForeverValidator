@@ -25,7 +25,12 @@ struct BlockInfoDescriptorUnitPlacement {
 
 struct BlockInfoDescriptorUnitDefinition {
     BlockInfoDescriptorUnitOffset offset;
+    u32 helperMask = 0u;
+    u32 junctionMask = 0u;
     bool underground = false;
+    bool hasHelperMask = false;
+    bool hasJunctionMask = false;
+    bool hasUnderground = false;
     TmnfFormat::ArchiveIdentifierValue terrainModifierId;
     std::string surfaceIdName;
     std::array<std::string, 4> sourceDescriptorPaths;

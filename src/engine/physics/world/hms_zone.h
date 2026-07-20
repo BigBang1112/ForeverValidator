@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <vector>
 
 #include "engine/core/engine_types.h"
@@ -26,6 +27,9 @@ struct CHmsZone {
     virtual void RemoveCorpus(CHmsCorpus *corpus);
     void ChangeCorpusCategory(CHmsCorpus &corpus,
                               EHmsCorpusCat newCategory);
+    bool AppendWaterPlaneEq(const GmVec4 &plane);
+    std::size_t WaterPlaneEqCount(void) const;
+    const GmVec4 *WaterPlaneEqAt(std::size_t index) const;
 
 protected:
     bool ContainsCorpus(const CHmsCorpus &corpus) const {
@@ -49,6 +53,7 @@ private:
     std::vector<CHmsCorpus *> buildCorpuses_;
     std::vector<CHmsCorpus *> lightEmitterCorpuses_;
     std::vector<CHmsForceField *> forceFields_;
+    std::vector<GmVec4> waterPlaneEqs_;
 };
 
 struct CHmsZoneDynamic : CHmsZone {

@@ -263,11 +263,9 @@ void CSceneVehicleCar::TryEnterForwardBurnout(const CSceneVehicleCarTuning *tuni
                                               const GmVec3 &linearSpeed,
                                               float visualSteerYaw,
                                               float frameY, u32 tick,
-                                              int waterActive,
                                               int hasGroundMaterial) {
   const float gate = LowSpeedGateThreshold;
-  if (controls.forcedLowSpeedFriction != 0 || waterActive != 0 ||
-      hasGroundMaterial == 0) {
+  if (controls.forcedLowSpeedFriction != 0 || hasGroundMaterial == 0) {
     return;
   }
   if (!(controls.lowSpeedGateA > gate && controls.lowSpeedGateB > gate)) {

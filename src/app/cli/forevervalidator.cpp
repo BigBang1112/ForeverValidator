@@ -9,8 +9,10 @@
 #include <utility>
 #include <vector>
 
+#ifndef _WIN32
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 #include <forevervalidator/json.h>
 #include <forevervalidator/native.h>
@@ -194,6 +196,23 @@ int ValidateReplayInChild(
         const fs::path &outputPath) {
     const std::string replayText = replayPath.string();
     const std::string outputText = outputPath.string();
+#ifdef _WIN32
+    const ReplayIdentity identity{replayText};
+    NativeFileResult file = forevervalidator::ReadNativeReplayFile(
+            replayText, identity);
+    ValidationAttempt attempt = ValidateLoadedReplay(context, file, identity);
+    if (!attempt) {
+        ReportValidationError(attempt.Error());
+    }
+    int exitCode = AttemptExitCode(attempt);
+    if (exitCode <= 1 &&
+        !WriteTextFile(outputPath, AttemptJson(attempt))) {
+        std::fprintf(stderr, "could not write output %s\n",
+                     outputText.c_str());
+        exitCode = 67;
+    }
+    return exitCode;
+#else
     std::fflush(nullptr);
     const pid_t pid = fork();
     if (pid < 0) {
@@ -237,6 +256,7 @@ int ValidateReplayInChild(
         return 128 + WTERMSIG(status);
     }
     return 70;
+#endif
 }
 
 }  // namespace
@@ -294,7 +314,7 @@ int main(int argc, char **argv) {
         ReportValidationError(source.Error());
         if (outputDirectory.has_value()) {
             std::fprintf(stderr,
-                         "could not prepare Stadium pack validation context\n");
+                         "could not prepare installed-pack validation context\n");
         }
         return forevervalidator::ValidationErrorExitCode(source.Error());
     }

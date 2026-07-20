@@ -14,14 +14,23 @@
 #include "format/archive/scene_object_archive_chunk_ids.h"
 #include "format/archive/scene_object_link_archive_chunk_ids.h"
 #include "format/archive/scene_sector_archive_chunk_ids.h"
+#include "format/archive/scene_traffic_graph_archive_chunk_ids.h"
 #include "format/archive/scene_vehicle_environment_archive_chunk_ids.h"
 #include "format/static_solid/static_solid_archive_animation_motion_chunk_ids.h"
 #include "format/static_solid/static_solid_archive_decorator_tree_chunk_ids.h"
 #include "format/static_solid/static_solid_archive_hms_chunk_ids.h"
 #include "format/static_solid/static_solid_archive_solid_chunk_ids.h"
+#include "format/static_solid/static_solid_archive_shader_chunk_ids.h"
 #include "format/static_solid/static_solid_archive_tree_chunk_ids.h"
 #include "format/static_solid/static_solid_archive_visual_surface_chunk_ids.h"
+#include "format/vehicle_tuning/default_vehicle_archive_schema.h"
 #include "format/archive/tmnf_archive_ids.h"
+namespace {
+
+constexpr u32 CGameCtnZoneChunkCryptedFeedbackClassId = 0x2401c000u;
+
+}  // namespace
+
 int CGameCtnReplayStaticSolidArchiveClassInfo::IsUnknownClassId(u32 classId) {
   return classId == std::numeric_limits<u32>::max();
 }
@@ -46,14 +55,23 @@ u32 CGameCtnReplayStaticSolidArchiveClassInfo::FeedbackClassId(u32 classId) {
   case TMNF_CLASS_CGameCtnBlockInfoClassic:
   case TMNF_CLASS_CGameCtnBlockInfoRoad:
   case TMNF_CLASS_CGameCtnBlockInfoClip:
+  case TMNF_CLASS_CGameCtnBlockInfoSlope:
   case TMNF_CLASS_CGameCtnBlockInfoPylon:
   case TMNF_CLASS_CGameCtnBlockInfoRectAsym:
   case TMNF_CLASS_CGameCtnBlock:
     return 0x24005000u;
+  case TMNF_CLASS_CGameCtnZoneFlat:
+  case TMNF_CLASS_CGameCtnZoneFrontier:
+    return CGameCtnZoneChunkCryptedFeedbackClassId;
   case TMNF_CLASS_CGameSkin:
+  case TMNF_CLASS_CGameCtnDecorationTerrainModifier:
   case TMNF_CLASS_CGameCtnBlockUnitInfo:
   case TMNF_CLASS_CSceneVehicleEnvironment:
+  case TMNF_CLASS_CSceneVehicleStruct:
+  case TMNF_CLASS_CSceneVehicleMaterialGroup:
+  case TMNF_CLASS_CSceneVehicleEmitter:
   case TMNF_CLASS_CSceneSector:
+  case TMNF_CLASS_CSceneTrafficGraph:
   case TMNF_CLASS_CHmsItem:
   case TMNF_CLASS_CSceneObjectLink:
     return TMNF_CLASS_CMwNod;
@@ -61,6 +79,10 @@ u32 CGameCtnReplayStaticSolidArchiveClassInfo::FeedbackClassId(u32 classId) {
   case TMNF_CLASS_GxLightDirectional:
     return TMNF_CLASS_GxLight;
   case TMNF_CLASS_CFuncKeysNatural:
+    return TMNF_CLASS_CFuncKeys;
+  case TMNF_CLASS_CFuncSkel:
+    return TMNF_CLASS_CMwNod;
+  case TMNF_CLASS_CFuncKeysSkel:
     return TMNF_CLASS_CFuncKeys;
   case TMNF_CLASS_CFuncTreeSubVisualSequence:
     return TMNF_CLASS_CFuncTree;
@@ -74,18 +96,29 @@ u32 CGameCtnReplayStaticSolidArchiveClassInfo::FeedbackClassId(u32 classId) {
     return TMNF_CLASS_CScene;
   case TMNF_CLASS_CSceneMobil:
     return TMNF_CLASS_CSceneObject;
+  case TMNF_CLASS_CSceneMobilLeaves:
+    return TMNF_CLASS_CSceneMobil;
   case TMNF_CLASS_CSceneLight:
-    return TMNF_CLASS_CSceneObject;
+    return TMNF_CLASS_CScenePoc;
   case TMNF_CLASS_CSceneVehicleCar:
     return TMNF_CLASS_CSceneVehicle;
   case TMNF_CLASS_CSceneSoundSource:
     return TMNF_CLASS_CScenePoc;
   case TMNF_CLASS_CMotionPlayer:
+  case TMNF_CLASS_CMotions:
     return TMNF_CLASS_CMotion;
+  case TMNF_CLASS_CMotionWeather:
+    return TMNF_CLASS_CMotionManaged;
+  case TMNF_CLASS_CMotionEmitterLeaves:
+    return TMNF_CLASS_CMotionEmitterLeaves;
+  case TMNF_CLASS_CMotionManagerLeaves:
+    return TMNF_CLASS_CMotionManager;
+  case TMNF_CLASS_CMotionSkel:
+    return TMNF_CLASS_CMotionSkelSimple;
   case TMNF_CLASS_CMotionCmdBase:
-    return ArchiveChunkIdValue(CMotionCmdBaseArchiveChunkId::PeriodAndPhase);
+    return TMNF_CLASS_CMwCmd;
   case TMNF_CLASS_CMotionShader:
-    return TMNF_CLASS_CMotionShader;
+    return TMNF_CLASS_CMotionTrack;
   case TMNF_CLASS_CHmsZone:
   case TMNF_CLASS_CHmsZoneDynamic:
     return TMNF_CLASS_CHmsZone;
@@ -96,6 +129,9 @@ u32 CGameCtnReplayStaticSolidArchiveClassInfo::FeedbackClassId(u32 classId) {
     return TMNF_CLASS_CPlug;
   case TMNF_CLASS_CPlugVisualIndexedTriangles:
     return TMNF_CLASS_CPlugVisualIndexed;
+  case TMNF_CLASS_CPlugVisualSprite:
+  case TMNF_CLASS_CPlugVisualGrid:
+    return TMNF_CLASS_CPlugVisual3D;
   case TMNF_CLASS_CPlugTreeLight:
     return TMNF_CLASS_CPlugTree;
   case TMNF_CLASS_CPlugSurface:
@@ -108,6 +144,18 @@ u32 CGameCtnReplayStaticSolidArchiveClassInfo::FeedbackClassId(u32 classId) {
     return TMNF_CLASS_CPlug;
   case TMNF_CLASS_CPlugMaterial:
     return TMNF_CLASS_CPlug;
+  case TMNF_CLASS_CPlugMaterialCustom:
+    return TMNF_CLASS_CPlug;
+  case TMNF_CLASS_CPlugBitmap:
+    return TMNF_CLASS_CPlug;
+  case TMNF_CLASS_CPlugFileGen:
+    return TMNF_CLASS_CPlugFileImg;
+  case TMNF_CLASS_CPlugShaderApply:
+    return TMNF_CLASS_CPlugShaderGeneric;
+  case TMNF_CLASS_CPlugShaderPass:
+    return TMNF_CLASS_CPlug;
+  case TMNF_CLASS_CPlugBitmapApply:
+    return TMNF_CLASS_CPlugBitmapAddress;
   case TMNF_CLASS_CPlugTree:
     return TMNF_CLASS_CPlug;
   case TMNF_CLASS_CPlugTreeVisualMip:
@@ -127,29 +175,42 @@ int CGameCtnReplayStaticSolidArchiveClassInfo::IsKnownNodeClass(u32 classId) {
   case TMNF_CLASS_CGameCtnBlockInfoClassic:
   case TMNF_CLASS_CGameCtnBlockInfoRoad:
   case TMNF_CLASS_CGameCtnBlockInfoClip:
+  case TMNF_CLASS_CGameCtnBlockInfoSlope:
   case TMNF_CLASS_CGameCtnBlockInfoPylon:
   case TMNF_CLASS_CGameCtnBlockInfoRectAsym:
   case TMNF_CLASS_CGameCtnBlock:
   case TMNF_CLASS_GxLightAmbient:
   case TMNF_CLASS_GxLightDirectional:
   case TMNF_CLASS_CFuncKeysNatural:
+  case TMNF_CLASS_CFuncSkel:
+  case TMNF_CLASS_CFuncKeysSkel:
   case TMNF_CLASS_CFuncTreeSubVisualSequence:
   case ArchiveChunkIdValue(FunctionCurveChunkId::Root):
   case TMNF_CLASS_CScenePoc:
   case TMNF_CLASS_CSceneLight:
   case TMNF_CLASS_CSceneSoundSource:
   case TMNF_CLASS_CSceneMobil:
+  case TMNF_CLASS_CSceneMobilLeaves:
   case TMNF_CLASS_CSceneObjectLink:
   case TMNF_CLASS_CSceneVehicleCar:
   case TMNF_CLASS_CScene3d:
   case TMNF_CLASS_CSceneSector:
+  case TMNF_CLASS_CSceneTrafficGraph:
   case ArchiveChunkIdValue(VehicleTuningChunkId::Root):
   case ArchiveChunkIdValue(VehicleTuningContainerChunkId::Root):
   case TMNF_CLASS_CSceneVehicleEnvironment:
+  case TMNF_CLASS_CSceneVehicleStruct:
+  case TMNF_CLASS_CSceneVehicleMaterialGroup:
+  case TMNF_CLASS_CSceneVehicleEmitter:
   case TMNF_CLASS_CMotionCmdBase:
+  case TMNF_CLASS_CMotions:
   case TMNF_CLASS_CMotionShader:
   case TMNF_CLASS_CMotionPlayer:
+  case TMNF_CLASS_CMotionEmitterLeaves:
+  case TMNF_CLASS_CMotionManagerLeaves:
+  case TMNF_CLASS_CMotionWeather:
   case TMNF_CLASS_CMotionDayTime:
+  case TMNF_CLASS_CMotionSkel:
   case TMNF_CLASS_CHmsZone:
   case TMNF_CLASS_CHmsZoneDynamic:
   case TMNF_CLASS_CHmsItem:
@@ -157,12 +218,18 @@ int CGameCtnReplayStaticSolidArchiveClassInfo::IsKnownNodeClass(u32 classId) {
   case TMNF_CLASS_CHmsSoundSource:
   case TMNF_CLASS_CPlugSolid:
   case TMNF_CLASS_CPlugVisualIndexedTriangles:
+  case TMNF_CLASS_CPlugVisualSprite:
+  case TMNF_CLASS_CPlugVisualGrid:
   case TMNF_CLASS_CPlugTree:
   case TMNF_CLASS_CPlugTreeLight:
   case TMNF_CLASS_CPlugSurface:
   case TMNF_CLASS_CPlugSurfaceGeom:
   case TMNF_CLASS_CPlugIndexBuffer:
   case TMNF_CLASS_CPlugMaterial:
+  case TMNF_CLASS_CPlugMaterialCustom:
+  case TMNF_CLASS_CPlugBitmap:
+  case TMNF_CLASS_CPlugFileGen:
+  case TMNF_CLASS_CPlugBitmapRenderWater:
   case TMNF_CLASS_CPlugTreeVisualMip:
   case TMNF_CLASS_CPlugDecoratorTree:
   case TMNF_CLASS_CPlugDecoratorSolid:
@@ -311,11 +378,71 @@ std::optional<u32> LightCurveAndTuningChunkInfo(u32 classId, u32 chunkId) {
 }
 
 std::optional<u32> SceneChunkInfo(u32 classId, u32 chunkId) {
+  if (classId == TMNF_CLASS_CSceneVehicleStruct) {
+    switch (chunkId) {
+    case ArchiveChunkIdValue(CSceneVehicleStructArchiveChunkId::Root):
+    case 0x0a039001u:
+    case 0x0a039002u:
+    case 0x0a039003u:
+    case 0x0a039004u:
+    case 0x0a039007u:
+    case 0x0a039008u:
+    case 0x0a03900bu:
+    case 0x0a03900cu:
+    case 0x0a03900du:
+    case 0x0a03900eu:
+    case 0x0a039011u:
+      return 1u;
+    case ArchiveChunkIdValue(
+            CSceneVehicleStructArchiveChunkId::SimulationWheelBuffer):
+    case ArchiveChunkIdValue(
+            CSceneVehicleStructArchiveChunkId::VisualVehicleCount):
+    case ArchiveChunkIdValue(CSceneVehicleStructArchiveChunkId::VisualArms):
+    case ArchiveChunkIdValue(CSceneVehicleStructArchiveChunkId::VisualLights):
+    case ArchiveChunkIdValue(CSceneVehicleStructArchiveChunkId::VisualWheels):
+    case ArchiveChunkIdValue(CSceneVehicleStructArchiveChunkId::VisualIds):
+    case ArchiveChunkIdValue(
+            CSceneVehicleStructArchiveChunkId::VehicleMaterialGroups):
+    case ArchiveChunkIdValue(
+            CSceneVehicleStructArchiveChunkId::FeedbackCurves):
+    case ArchiveChunkIdValue(
+            CSceneVehicleStructArchiveChunkId::VehicleEmitters):
+      return 3u;
+    default:
+      return 0u;
+    }
+  }
+  if (classId == TMNF_CLASS_CSceneVehicleMaterialGroup) {
+    return chunkId == ArchiveChunkIdValue(
+                              CSceneVehicleMaterialGroupArchiveChunkId::Root)
+            ? 3u
+            : 0u;
+  }
+  if (classId == TMNF_CLASS_CSceneVehicleEmitter) {
+    switch (chunkId) {
+    case ArchiveChunkIdValue(CSceneVehicleEmitterArchiveChunkId::Root):
+    case 0x0a010001u:
+      return 1u;
+    case ArchiveChunkIdValue(CSceneVehicleEmitterArchiveChunkId::Chunk002):
+    case ArchiveChunkIdValue(CSceneVehicleEmitterArchiveChunkId::Chunk003):
+    case ArchiveChunkIdValue(CSceneVehicleEmitterArchiveChunkId::Chunk004):
+    case ArchiveChunkIdValue(CSceneVehicleEmitterArchiveChunkId::Chunk005):
+      return 3u;
+    default:
+      return 0u;
+    }
+  }
   if (classId == TMNF_CLASS_CSceneSector) {
     if (IsCSceneSectorInfo1Chunk(chunkId)) {
       return 1u;
     }
     return IsCSceneSectorInfo3Chunk(chunkId) ? 3u : 0u;
+  }
+  if (classId == TMNF_CLASS_CSceneTrafficGraph) {
+    if (IsCSceneTrafficGraphInfo1Chunk(chunkId)) {
+      return 1u;
+    }
+    return IsCSceneTrafficGraphInfo3Chunk(chunkId) ? 3u : 0u;
   }
   if (classId == TMNF_CLASS_CScene3d) {
     if (IsCSceneInfo1Chunk(chunkId) || IsCScene3dInfo1Chunk(chunkId)) {
@@ -327,6 +454,7 @@ std::optional<u32> SceneChunkInfo(u32 classId, u32 chunkId) {
   if (classId == TMNF_CLASS_CScenePoc || classId == TMNF_CLASS_CSceneLight ||
       classId == TMNF_CLASS_CSceneSoundSource ||
       classId == TMNF_CLASS_CSceneMobil ||
+      classId == TMNF_CLASS_CSceneMobilLeaves ||
       classId == TMNF_CLASS_CSceneVehicleCar) {
     if (IsCSceneObjectInfo1Chunk(chunkId)) {
       return 1u;
@@ -350,6 +478,22 @@ std::optional<u32> SceneChunkInfo(u32 classId, u32 chunkId) {
       }
       return IsCSceneMobilInfo3Chunk(chunkId) ? 3u : 0u;
     }
+    if (classId == TMNF_CLASS_CSceneMobilLeaves) {
+      if (IsCSceneMobilInfo1Chunk(chunkId) ||
+          IsCSceneMobilLeavesInfo1Chunk(chunkId)) {
+        return 1u;
+      }
+      return IsCSceneMobilInfo3Chunk(chunkId) ||
+                     IsCSceneMobilLeavesInfo3Chunk(chunkId)
+              ? 3u
+              : 0u;
+    }
+    if (IsCSceneMobilInfo1Chunk(chunkId)) {
+      return 1u;
+    }
+    if (IsCSceneMobilInfo3Chunk(chunkId)) {
+      return 3u;
+    }
     if (chunkId == TMNF_CLASS_CSceneVehicle ||
         IsCSceneVehicleCarInfo3Chunk(chunkId)) {
       return 3u;
@@ -372,14 +516,50 @@ std::optional<u32> SceneChunkInfo(u32 classId, u32 chunkId) {
 }
 
 std::optional<u32> MotionChunkInfo(u32 classId, u32 chunkId) {
+  if (classId == TMNF_CLASS_CFuncSkel) {
+    if (IsCFuncSkelInfo1Chunk(chunkId)) {
+      return 1u;
+    }
+    return IsCFuncSkelInfo3Chunk(chunkId) ? 3u : 0u;
+  }
+  if (classId == TMNF_CLASS_CFuncKeysSkel) {
+    if (IsCFuncKeysSkelInfo1Chunk(chunkId)) {
+      return 1u;
+    }
+    return IsCFuncKeysSkelInfo3Chunk(chunkId) ? 3u : 0u;
+  }
+  if (classId == TMNF_CLASS_CMotions) {
+    if (IsCMotionsInfo1Chunk(chunkId)) {
+      return 1u;
+    }
+    return IsCMotionsInfo3Chunk(chunkId) ? 3u : 0u;
+  }
+  if (classId == TMNF_CLASS_CMotionSkel) {
+    return IsCMotionSkelInfo3Chunk(chunkId) ? 3u : 0u;
+  }
   if (classId == TMNF_CLASS_CMotionPlayer) {
     if (IsCMotionPlayerInfo1Chunk(chunkId)) {
       return 1u;
     }
     return IsCMotionPlayerInfo3Chunk(chunkId) ? 3u : 0u;
   }
+  if (classId == TMNF_CLASS_CMotionEmitterLeaves) {
+    if (IsCMotionEmitterLeavesInfo1Chunk(chunkId)) {
+      return 1u;
+    }
+    return IsCMotionEmitterLeavesInfo3Chunk(chunkId) ? 3u : 0u;
+  }
+  if (classId == TMNF_CLASS_CMotionManagerLeaves) {
+    return IsCMotionManagerLeavesInfo3Chunk(chunkId) ? 3u : 0u;
+  }
   if (classId == TMNF_CLASS_CMotionDayTime) {
     return IsCMotionDayTimeInfo3Chunk(chunkId) ? 3u : 0u;
+  }
+  if (classId == TMNF_CLASS_CMotionWeather) {
+    if (IsCMotionWeatherInfo1Chunk(chunkId)) {
+      return 1u;
+    }
+    return IsCMotionWeatherInfo3Chunk(chunkId) ? 3u : 0u;
   }
   if (classId == TMNF_CLASS_CMotionCmdBase) {
     if (IsCMotionCmdBaseInfo1Chunk(chunkId)) {
@@ -454,11 +634,39 @@ std::optional<u32> PlugChunkInfo(u32 classId, u32 chunkId) {
     }
     return IsCPlugTreeRequiredPayloadChunk(chunkId) ? 3u : 0u;
   }
-  if (classId == TMNF_CLASS_CPlugVisualIndexedTriangles) {
-    if (IsCPlugVisualIndexedTrianglesInfo1Chunk(chunkId)) {
+  if (classId == TMNF_CLASS_CPlugVisualIndexedTriangles ||
+      classId == TMNF_CLASS_CPlugVisualSprite) {
+    if (IsCPlugVisualInfo1Chunk(chunkId) ||
+        IsCPlugVisual3DInfo1Chunk(chunkId)) {
       return 1u;
     }
-    return IsCPlugVisualIndexedTrianglesInfo3Chunk(chunkId) ? 3u : 0u;
+    if (IsCPlugVisualInfo3Chunk(chunkId) ||
+        IsCPlugVisual3DInfo3Chunk(chunkId)) {
+      return 3u;
+    }
+    if (classId == TMNF_CLASS_CPlugVisualIndexedTriangles &&
+        (chunkId == TMNF_CLASS_CPlugSurface ||
+         chunkId == ArchiveChunkIdValue(
+                            CPlugVisualIndexedArchiveChunkId::IndexBuffer))) {
+      return 3u;
+    }
+    if (classId == TMNF_CLASS_CPlugVisualSprite &&
+        IsCPlugVisualSpriteInfo3Chunk(chunkId)) {
+      return 3u;
+    }
+    return 0u;
+  }
+  if (classId == TMNF_CLASS_CPlugVisualGrid) {
+    if (IsCPlugVisualInfo1Chunk(chunkId) ||
+        IsCPlugVisual3DInfo1Chunk(chunkId)) {
+      return 1u;
+    }
+    if (IsCPlugVisualInfo3Chunk(chunkId) ||
+        IsCPlugVisual3DInfo3Chunk(chunkId) ||
+        IsCPlugVisualGridInfo3Chunk(chunkId)) {
+      return 3u;
+    }
+    return 0u;
   }
   if (classId == TMNF_CLASS_CPlugSurface) {
     return chunkId == TMNF_CLASS_CPlugSurface ? 3u : 0u;
@@ -477,6 +685,75 @@ std::optional<u32> PlugChunkInfo(u32 classId, u32 chunkId) {
       return 3u;
     }
     return IsOptionalMaterialPayloadChunk(chunkId) ? 1u : 0u;
+  }
+  if (classId == TMNF_CLASS_CPlugMaterialCustom) {
+    switch (chunkId) {
+    case 0x0903a004u:
+    case 0x0903a006u:
+    case 0x0903a00au:
+    case 0x0903a00cu:
+    case 0x0903a00du:
+    case 0x0903a00fu:
+    case 0x0903a011u:
+      return 3u;
+    default:
+      return 0u;
+    }
+  }
+  if (classId == TMNF_CLASS_CPlugBitmap) {
+    switch (chunkId) {
+    case 0x09011014u:
+    case 0x09011015u:
+    case 0x09011018u:
+    case 0x09011019u:
+    case 0x0901101bu:
+    case 0x0901101cu:
+    case 0x0901101du:
+    case 0x0901101eu:
+    case 0x0901101fu:
+    case 0x09011020u:
+    case 0x09011021u:
+    case 0x09011022u:
+    case 0x09011023u:
+    case 0x09011024u:
+    case 0x09011025u:
+    case 0x09011028u:
+    case 0x0901102eu:
+    case 0x09011030u:
+      return 3u;
+    default:
+      return 0u;
+    }
+  }
+  if (classId == TMNF_CLASS_CPlugBitmapRenderWater) {
+    switch (chunkId) {
+    case 0x09086003u:
+    case 0x09086008u:
+    case 0x0908600au:
+    case 0x0908600bu:
+    case 0x0908600cu:
+    case 0x0908600du:
+    case 0x0908600eu:
+    case 0x09087005u:
+    case 0x09087006u:
+      return 3u;
+    default:
+      return 0u;
+    }
+  }
+  if (classId == TMNF_CLASS_CPlugShaderApply) {
+    if (IsCPlugShaderRequiredPayloadChunk(chunkId) ||
+        IsCPlugShaderGenericRequiredPayloadChunk(chunkId) ||
+        IsCPlugShaderApplyRequiredPayloadChunk(chunkId)) {
+      return 3u;
+    }
+    return 0u;
+  }
+  if (classId == TMNF_CLASS_CPlugShaderPass) {
+    return IsCPlugShaderPassRequiredPayloadChunk(chunkId) ? 3u : 0u;
+  }
+  if (classId == TMNF_CLASS_CPlugBitmapApply) {
+    return IsCPlugBitmapApplyRequiredPayloadChunk(chunkId) ? 3u : 0u;
   }
   if (classId == TMNF_CLASS_CPlugDecoratorSolid) {
     return chunkId == TMNF_CLASS_CPlugDecoratorSolid ? 3u : 0u;

@@ -8,6 +8,7 @@
 #include "format/static_solid/static_solid_external_node_paths.h"
 struct CGameCtnReplayMapInput;
 struct CGameCtnReplayArchiveStaticModelCollection;
+struct CatalogDecorationSizeDefinition;
 class ReplaySceneBlockPlacements;
 struct StaticSolidArchiveCatalog;
 struct StaticSolidArchiveLoadSession;
@@ -53,7 +54,15 @@ public:
             const ReplaySceneBlockPlacements *placements,
             const CGameCtnReplayArchiveStaticModelCollection *archiveModels,
             const StaticSolidArchiveCatalog *inventory,
+            const StaticSolidArchiveReferenceCatalog *references,
+            const CatalogDecorationSizeDefinition *decorationSize);
+    int SeedFromReplayMapStaticInputs(
+            const ReplaySceneBlockPlacements *placements,
+            const CGameCtnReplayArchiveStaticModelCollection *archiveModels,
             const StaticSolidArchiveReferenceCatalog *references);
+    int SeedFromReplayDecorationStaticInputs(
+            const StaticSolidArchiveCatalog *inventory,
+            const CatalogDecorationSizeDefinition *decorationSize);
     int RequireMissingDescriptor(
             const StaticSolidArchiveLoadSession *store,
             const char *selectedDescriptorPath);

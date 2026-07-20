@@ -4,18 +4,28 @@
 #include <limits>
 #include <utility>
 
+#include "engine/core/binary32_math.h"
+
 namespace {
 
 constexpr float KeyEpsilon = 1.0e-5f;
 
+// United evaluates the promoted epsilon with 24-bit x87 precision.
+float LowerKeyBound(float key) {
+    return Binary32::FromDouble(
+            static_cast<double>(key) - static_cast<double>(KeyEpsilon));
+}
+
+float UpperKeyBound(float key) {
+    return Binary32::FromDouble(
+            static_cast<double>(key) + static_cast<double>(KeyEpsilon));
+}
+
 bool IsWithinKeyBounds(float x, float lower, float upper) {
-    const double value = static_cast<double>(x);
-    const double epsilon = static_cast<double>(KeyEpsilon);
-    const double lowerBound = static_cast<double>(lower) - epsilon;
-    const double upperBound = static_cast<double>(upper) + epsilon;
-    return !std::isnan(value) && !std::isnan(lowerBound) &&
-           !std::isnan(upperBound) && value >= lowerBound &&
-           value <= upperBound;
+    const float lowerBound = LowerKeyBound(lower);
+    const float upperBound = UpperKeyBound(upper);
+    return !std::isnan(x) && !std::isnan(lowerBound) &&
+           !std::isnan(upperBound) && x >= lowerBound && x <= upperBound;
 }
 
 } // namespace
@@ -34,14 +44,11 @@ void CFuncKeys::GetPreviousKey(float x, unsigned long &keyIndex) const {
         keyIndex = InvalidEngineIndex;
         return;
     }
-    if (count == 1u ||
-        static_cast<double>(x) <
-                static_cast<double>(keyPositions.front()) - KeyEpsilon) {
+    if (count == 1u || x < LowerKeyBound(keyPositions.front())) {
         keyIndex = 0u;
         return;
     }
-    if (static_cast<double>(x) >
-        static_cast<double>(keyPositions.back()) + KeyEpsilon) {
+    if (x > UpperKeyBound(keyPositions.back())) {
         keyIndex = count - 1u;
         return;
     }
@@ -70,15 +77,12 @@ void CFuncKeys::GetBoundingIndices(
         nextKeyIndex = InvalidEngineIndex;
         return;
     }
-    if (count == 1u ||
-        static_cast<double>(x) <
-                static_cast<double>(keyPositions.front()) - KeyEpsilon) {
+    if (count == 1u || x < LowerKeyBound(keyPositions.front())) {
         keyIndex = 0u;
         nextKeyIndex = 0u;
         return;
     }
-    if (static_cast<double>(x) >
-        static_cast<double>(keyPositions.back()) + KeyEpsilon) {
+    if (x > UpperKeyBound(keyPositions.back())) {
         keyIndex = count - 1u;
         nextKeyIndex = count - 1u;
         return;

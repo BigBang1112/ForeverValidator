@@ -39,6 +39,10 @@ ValidationFailureReason MissingAssetReason(std::string_view identifier) {
     if (identifier == "packlist.dat") {
         return ValidationFailureReason::PacklistMissing;
     }
+    if (identifier.size() > 4u &&
+        identifier.substr(identifier.size() - 4u) == ".pak") {
+        return ValidationFailureReason::InstalledPackMissing;
+    }
     return ValidationFailureReason::RequiredAssetMissing;
 }
 
@@ -190,7 +194,7 @@ Result<AssetBytes> ReadInstalledPackAsset(
                     std::numeric_limits<std::size_t>::max()) {
             return Result<AssetBytes>::Failure(AssetReadError(
                     ValidationErrorCode::AssetLoadingFailed,
-                    ValidationFailureReason::RequiredAssetMissing,
+                    MissingAssetReason(request.logicalIdentifier),
                     request.logicalIdentifier,
                     "installed-pack asset has invalid length"));
         }

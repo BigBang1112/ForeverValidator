@@ -11,6 +11,8 @@
 #include "format/archive/scene_object_link_archive_chunk_ids.h"
 #include "format/pack/installed/scene_descriptor_folder_paths.h"
 #include "format/archive/tmnf_archive_ids.h"
+#include "format/static_solid/static_scene_archive_loader.h"
+#include "format/static_solid/static_solid_archive_payload_decode.h"
 #include <utility>
 
 #include "format/archive/archive_binary.h"
@@ -56,7 +58,8 @@ static int assign_cstr_to_string(std::string *dst, const char *src) {
 enum BlockInfoDescriptorNodRefPurpose {
     BlockInfoDescriptorNodRefPurpose_Generic = 0,
     BlockInfoDescriptorNodRefPurpose_BlockMobil = 1,
-    BlockInfoDescriptorNodRefPurpose_HmsSolid = 2
+    BlockInfoDescriptorNodRefPurpose_HmsSolid = 2,
+    BlockInfoDescriptorNodRefPurpose_PylonMobil = 3
 };
 
 static int blockinfo_descriptor_append_model_ref(
@@ -94,8 +97,8 @@ static int blockinfo_descriptor_append_model_ref(
         return 0;
     }
     if (plainPackPath[0] != '\0' &&
-        SceneDescriptorFolderPaths::IsStadiumMediaSolidPath(plainPackPath) &&
-        !SceneDescriptorFolderPaths::HashStadiumMediaSolidPath(
+        SceneDescriptorFolderPaths::IsMediaSolidPath(plainPackPath) &&
+        !SceneDescriptorFolderPaths::HashMediaSolidPath(
                 plainPackPath,
                 hashedDescriptorPath,
                 sizeof(hashedDescriptorPath))) {
@@ -117,6 +120,64 @@ static int blockinfo_descriptor_parse_scene_mobil_archive(
         u32 mobilIndex,
         BlockInfoParsedMobilCollection *models);
 
+static int blockinfo_descriptor_extract_mobil_bytes(
+        const CPlugFilePack *pack,
+        const char *plainMobilPath,
+        const char *selectedMobilPath,
+        ByteBuffer *bytesOut) {
+    if (pack == nullptr || plainMobilPath == nullptr ||
+        selectedMobilPath == nullptr || bytesOut == nullptr) {
+        return 0;
+    }
+    const CPlugFileFidContainer_SFileDesc *file =
+            pack->FindFileDescByPath(selectedMobilPath);
+    if (file != nullptr && file->IsEncryptedPayload()) {
+        const u32 fileIndex = static_cast<u32>(file - pack->files.data());
+        StaticSolidArchiveLoadSession decodeSession;
+        CGameCtnReplayStaticSolidDecodedPayload decoded;
+        CGameCtnReplayStaticSolidArchiveDecodeStats stats;
+        return decodeSession.DecodePackFilePayloadWithStreamFeedback(
+                       *pack,
+                       *file,
+                       fileIndex,
+                       fileIndex + 1u,
+                       plainMobilPath,
+                       selectedMobilPath,
+                       &decoded,
+                       &stats) &&
+               decoded.CopyToByteBuffer(bytesOut);
+    }
+    return pack->ExtractPath(selectedMobilPath, bytesOut);
+}
+
+static int blockinfo_descriptor_pack_payload_is_complete(
+        const CPlugFilePack *pack,
+        const CPlugFileFidContainer_SFileDesc *file) {
+    if (pack == nullptr || file == nullptr ||
+        pack->dataStart > UINT32_MAX - file->offsetRel) {
+        return 0;
+    }
+    const size_t payloadOffset =
+            static_cast<size_t>(pack->dataStart) + file->offsetRel;
+    if (payloadOffset > pack->bytes.Size()) {
+        return 0;
+    }
+    const u32 packedByteCount = file->PackedPayloadByteCount();
+    size_t storedByteCount = packedByteCount;
+    if (file->IsEncryptedPayload()) {
+        if (packedByteCount > UINT32_MAX - 7u) {
+            return 0;
+        }
+        const size_t encryptedByteCount =
+                (static_cast<size_t>(packedByteCount) + 7u) & ~size_t{7u};
+        if (encryptedByteCount > UINT32_MAX - 8u) {
+            return 0;
+        }
+        storedByteCount = 8u + encryptedByteCount;
+    }
+    return storedByteCount <= pack->bytes.Size() - payloadOffset;
+}
+
 static int blockinfo_descriptor_parse_external_mobil_solid_refs(
         const char *descriptorPath,
         const BlockInfoDescriptorExternalRefs *externalRefs,
@@ -125,12 +186,12 @@ static int blockinfo_descriptor_parse_external_mobil_solid_refs(
         u32 variantIndex,
         u32 mobilIndex,
         const BlockInfoParsedHmsState *hmsState,
-        BlockInfoParsedMobilCollection *models) {
-    (void)hmsState;
+        BlockInfoParsedMobilCollection *models,
+        u32 requiredDescriptorClassId = 0u) {
     if (descriptorPath == nullptr || externalRefs == nullptr ||
         mobilRef == nullptr || !mobilRef->HasName() ||
         externalRefs->InstalledPack() == nullptr || models == nullptr) {
-        return 1;
+        return requiredDescriptorClassId == 0u;
     }
     char plainMobilPath[512];
     char hashedMobilPath[512];
@@ -141,28 +202,58 @@ static int blockinfo_descriptor_parse_external_mobil_solid_refs(
                                              sizeof(plainMobilPath))) {
         return 0;
     }
+    if (SceneDescriptorFolderPaths::IsMediaSolidPath(plainMobilPath)) {
+        return requiredDescriptorClassId == 0u &&
+               blockinfo_descriptor_append_model_ref(descriptorPath,
+                                                      selectorGroup,
+                                                      variantIndex,
+                                                      mobilIndex,
+                                                      externalRefs,
+                                                      mobilRef,
+                                                      hmsState,
+                                                      models);
+    }
     if (!SceneDescriptorFolderPaths::IsMobilDescriptorPath(plainMobilPath)) {
-        return 1;
+        return requiredDescriptorClassId == 0u;
     }
     if (!SceneDescriptorFolderPaths::HashMobilDescriptorPath(
                 plainMobilPath, hashedMobilPath, sizeof(hashedMobilPath))) {
         return 0;
     }
+    const CPlugFilePack *pack = externalRefs->InstalledPack();
+    const CPlugFileFidContainer_SFileDesc *file =
+            pack->FindFileDescByPath(hashedMobilPath);
     ByteBuffer mobilBytes{};
-    if (!externalRefs->InstalledPack()->ExtractPath(hashedMobilPath, &mobilBytes) ||
-        mobilBytes.Empty() || mobilBytes.Size() > UINT32_MAX) {
+    if (!blockinfo_descriptor_extract_mobil_bytes(
+                pack,
+                plainMobilPath,
+                hashedMobilPath,
+                &mobilBytes)) {
+        // The game does not instantiate a non-loadable external mobil. Still
+        // reject a selected pack entry whose declared payload is truncated.
+        return mobilRef->IsLoadable() == 0u &&
+               (file == nullptr ||
+                blockinfo_descriptor_pack_payload_is_complete(pack, file));
+    }
+    if (mobilBytes.Empty() || mobilBytes.Size() > UINT32_MAX) {
         return 0;
     }
     BlockInfoDescriptorExternalRefs mobilExternalRefs;
     if (!mobilExternalRefs.ParseGbx(
-                mobilBytes.Data(), static_cast<u32>(mobilBytes.Size()))) {
+                mobilBytes.Data(), static_cast<u32>(mobilBytes.Size())) ||
+        (requiredDescriptorClassId != 0u &&
+         mobilExternalRefs.ClassId() != requiredDescriptorClassId)) {
         return 0;
     }
-    mobilExternalRefs.AttachInstalledPack(externalRefs->InstalledPack());
+    if (!mobilExternalRefs.AttachInstalledPackRelativeTo(
+                externalRefs->InstalledPack(), plainMobilPath)) {
+        return 0;
+    }
     BlockInfoSizeParseStream mobilStream{};
     mobilStream.bytes = mobilBytes.Data();
     mobilStream.byteCount = static_cast<u32>(mobilBytes.Size());
     mobilStream.offset = mobilExternalRefs.BodyOffsetForFormatParser();
+    mobilStream.SetBlockInfoSourceRefs(&mobilExternalRefs);
     /*
      * Mobil descriptors may reference several Stadium\Media\Solid assets. Only
      * the solid nested under the mobil's CHmsItem contributes to collision;
@@ -492,6 +583,20 @@ static int blockinfo_descriptor_skip_or_parse_nod_ref(
         BlockInfoDescriptorNodRefPurpose purpose,
         BlockInfoParsedMobilCollection *models);
 
+static int blockinfo_descriptor_skip_or_parse_nod_ref_value(
+        BlockInfoSizeParseStream *stream,
+        ArchiveNodeReference sourceNode,
+        const char *descriptorPath,
+        const BlockInfoDescriptorExternalRefs *externalRefs,
+        u32 selectorGroup,
+        u32 variantIndex,
+        u32 mobilIndex,
+        const BlockInfoParsedHmsState *hmsState,
+        BlockInfoDescriptorNodRefPurpose purpose,
+        BlockInfoParsedMobilCollection *models,
+        int *motionChangesLocationsOut = nullptr,
+        int *collisionUsesInitialTransformOut = nullptr);
+
 static int blockinfo_descriptor_is_solid_archive_boundary_word(u32 rawChunkId) {
     const u32 chunkId = TMNF_CPlugSolidCanonicalChunkIdFromArchiveWord(rawChunkId);
     return chunkId == CMwNodArchiveFacadeSentinel ||
@@ -584,7 +689,7 @@ static int blockinfo_descriptor_try_parse_mask_dispatched_solid_model_body(
                                                       sizeof(plainPath))) {
         return 0;
     }
-    if (!SceneDescriptorFolderPaths::IsStadiumMediaSolidPath(plainPath)) {
+    if (!SceneDescriptorFolderPaths::IsMediaSolidPath(plainPath)) {
         return 1;
     }
     if (!blockinfo_descriptor_append_model_ref(descriptorPath,
@@ -917,15 +1022,27 @@ static int blockinfo_descriptor_parse_scene_mobil_archive(
         BlockInfoParsedMobilCollection *models) {
     char sceneMobilObjectId[64];
     sceneMobilObjectId[0] = '\0';
+    int motionChangesLocations = 0;
+    int collisionUsesInitialTransform = 0;
+    const u32 firstMobil = models != nullptr ? models->Count() : 0u;
+    const auto finish = [&]() {
+        if (motionChangesLocations != 0u && models != nullptr) {
+            models->MarkAppendedMotionChangesLocations(firstMobil);
+        }
+        if (collisionUsesInitialTransform != 0u && models != nullptr) {
+            models->MarkAppendedCollisionUsesInitialTransform(firstMobil);
+        }
+        return 1;
+    };
     for (;;) {
         if (stream->offset >= stream->byteCount) {
-            return 1;
+            return finish();
         }
         if (stream->byteCount - stream->offset == 4u) {
             const u32 tail = ReadU32LE(stream->bytes + stream->offset);
             if (tail != CMwNodArchiveFacadeSentinel &&
                 !IsCSceneObjectDescriptorMobilTailChunk(tail)) {
-                return 1;
+                return finish();
             }
         }
         u32 rawChunkId = 0u;
@@ -935,7 +1052,7 @@ static int blockinfo_descriptor_parse_scene_mobil_archive(
         const u32 chunkId =
                 NormalizePackedCSceneObjectOrMobilArchiveChunkId(rawChunkId);
         if (chunkId == CMwNodArchiveFacadeSentinel) {
-            return 1;
+            return finish();
         }
         switch (chunkId) {
         case ArchiveChunkIdValue(CSceneObjectArchiveChunkId::Id):
@@ -948,7 +1065,26 @@ static int blockinfo_descriptor_parse_scene_mobil_archive(
                 return 0;
             }
             break;
-        case ArchiveChunkIdValue(CSceneObjectArchiveChunkId::MotionRef):
+        case ArchiveChunkIdValue(CSceneObjectArchiveChunkId::MotionRef): {
+            ArchiveNodeReference motionNode = ArchiveNodeReference::Invalid();
+            if (!stream->ReadArchiveNodeRef(&motionNode) ||
+                !blockinfo_descriptor_skip_or_parse_nod_ref_value(
+                        stream,
+                        motionNode,
+                        descriptorPath,
+                        externalRefs,
+                        selectorGroup,
+                        variantIndex,
+                        mobilIndex,
+                        nullptr,
+                BlockInfoDescriptorNodRefPurpose_Generic,
+                models,
+                &motionChangesLocations,
+                &collisionUsesInitialTransform)) {
+                return 0;
+            }
+            break;
+        }
         case ArchiveChunkIdValue(CSceneMobilArchiveChunkId::MessageHandlerRef):
             if (!blockinfo_descriptor_skip_or_parse_nod_ref(stream,
                                                             descriptorPath,
@@ -985,7 +1121,7 @@ static int blockinfo_descriptor_parse_scene_mobil_archive(
             // Otherwise the current node body ends at the consumed word.
             u32 skipMagic = 0u;
             if (!stream->ReadU32(&skipMagic)) {
-                return 1;
+                return finish();
             }
             if (skipMagic == 0x534b4950u) {
                 u32 skipByteCount = 0u;
@@ -995,14 +1131,15 @@ static int blockinfo_descriptor_parse_scene_mobil_archive(
                 }
                 break;
             }
-            return 1;
+            return finish();
         }
         }
     }
 }
 
-static int blockinfo_descriptor_skip_or_parse_nod_ref(
+static int blockinfo_descriptor_skip_or_parse_nod_ref_value(
         BlockInfoSizeParseStream *stream,
+        ArchiveNodeReference sourceNode,
         const char *descriptorPath,
         const BlockInfoDescriptorExternalRefs *externalRefs,
         u32 selectorGroup,
@@ -1010,11 +1147,14 @@ static int blockinfo_descriptor_skip_or_parse_nod_ref(
         u32 mobilIndex,
         const BlockInfoParsedHmsState *hmsState,
         BlockInfoDescriptorNodRefPurpose purpose,
-        BlockInfoParsedMobilCollection *models) {
-    ArchiveNodeReference sourceNode =
-            ArchiveNodeReference::Invalid();
-    if (!stream->ReadArchiveNodeRef(&sourceNode)) {
-        return 0;
+        BlockInfoParsedMobilCollection *models,
+        int *motionChangesLocationsOut,
+        int *collisionUsesInitialTransformOut) {
+    if (motionChangesLocationsOut != nullptr) {
+        *motionChangesLocationsOut = 0;
+    }
+    if (collisionUsesInitialTransformOut != nullptr) {
+        *collisionUsesInitialTransformOut = 0;
     }
     if (sourceNode.IsInvalid()) {
         return 1;
@@ -1043,6 +1183,18 @@ static int blockinfo_descriptor_skip_or_parse_nod_ref(
                     hmsState,
                     models);
         }
+        if (purpose == BlockInfoDescriptorNodRefPurpose_PylonMobil) {
+            return blockinfo_descriptor_parse_external_mobil_solid_refs(
+                    descriptorPath,
+                    externalRefs,
+                    externalRef,
+                    selectorGroup,
+                    variantIndex,
+                    mobilIndex,
+                    hmsState,
+                    models,
+                    TMNF_CLASS_CSceneMobil);
+        }
         if (purpose != BlockInfoDescriptorNodRefPurpose_Generic ||
             stream->offset > stream->byteCount - 4u ||
             ReadU32LE(stream->bytes + stream->offset) !=
@@ -1050,14 +1202,21 @@ static int blockinfo_descriptor_skip_or_parse_nod_ref(
             return 1;
         }
     }
-    if (stream->offset > stream->byteCount - 4u) {
-        return 1;
+    if (stream->offset > stream->byteCount ||
+        stream->byteCount - stream->offset < sizeof(u32)) {
+        return purpose != BlockInfoDescriptorNodRefPurpose_PylonMobil;
     }
     const u32 nextWord = ReadU32LE(stream->bytes + stream->offset);
+    if (purpose == BlockInfoDescriptorNodRefPurpose_PylonMobil &&
+        nextWord != TMNF_CLASS_CSceneMobil) {
+        return 0;
+    }
     if (nextWord != TMNF_CLASS_CSceneMobil &&
         nextWord != TMNF_CLASS_CPlugSolid &&
         nextWord != TMNF_CLASS_CGameCtnBlockUnitInfo &&
-        nextWord != TMNF_CLASS_CMotionPlayer) {
+        nextWord != TMNF_CLASS_CMotions &&
+        nextWord != TMNF_CLASS_CMotionPlayer &&
+        nextWord != TMNF_CLASS_CMotionEmitterLeaves) {
         return 1;
     }
     u32 classId = 0u;
@@ -1089,15 +1248,48 @@ static int blockinfo_descriptor_skip_or_parse_nod_ref(
         return stream->ParseUnitNode(ignoredOffset,
                                                      nullptr);
     }
+    case TMNF_CLASS_CMotions:
+        return stream->ParseInlineCMotionsArchive(
+                sourceNode,
+                motionChangesLocationsOut,
+                collisionUsesInitialTransformOut);
     case TMNF_CLASS_CMotionPlayer:
-        /*
-         * Chunk 0x0a005003 carries the object's motion node. Motion archives do
-         * not provide static collision surfaces, so this path only consumes it.
-         */
-        return stream->SkipInlineMotionToSceneChunk();
+    case TMNF_CLASS_CMotionEmitterLeaves:
+        return stream->ParseInlineMotionArchive(
+                sourceNode,
+                classId,
+                motionChangesLocationsOut,
+                collisionUsesInitialTransformOut);
     default:
         return 0;
     }
+}
+
+static int blockinfo_descriptor_skip_or_parse_nod_ref(
+        BlockInfoSizeParseStream *stream,
+        const char *descriptorPath,
+        const BlockInfoDescriptorExternalRefs *externalRefs,
+        u32 selectorGroup,
+        u32 variantIndex,
+        u32 mobilIndex,
+        const BlockInfoParsedHmsState *hmsState,
+        BlockInfoDescriptorNodRefPurpose purpose,
+        BlockInfoParsedMobilCollection *models) {
+    ArchiveNodeReference sourceNode =
+            ArchiveNodeReference::Invalid();
+    return stream != nullptr &&
+           stream->ReadArchiveNodeRef(&sourceNode) &&
+           blockinfo_descriptor_skip_or_parse_nod_ref_value(
+                   stream,
+                   sourceNode,
+                   descriptorPath,
+                   externalRefs,
+                   selectorGroup,
+                   variantIndex,
+                   mobilIndex,
+                   hmsState,
+                   purpose,
+                   models);
 }
 
 static int blockinfo_descriptor_parse_mobil_ref_array(
@@ -1125,15 +1317,44 @@ static int blockinfo_descriptor_parse_mobil_ref_array(
             return 0;
         }
         for (u32 mobil = 0u; mobil < mobilCount; mobil++) {
-            if (!blockinfo_descriptor_skip_or_parse_nod_ref(stream,
-                                                            descriptorPath,
-                                                            externalRefs,
-                                                            selectorGroup,
-                                                            variant,
-                                                            mobil,
-                                                            nullptr,
-                                                            BlockInfoDescriptorNodRefPurpose_BlockMobil,
-                                                            models)) {
+            ArchiveNodeReference sourceNode =
+                    ArchiveNodeReference::Invalid();
+            if (!stream->ReadArchiveNodeRef(&sourceNode)) {
+                return 0;
+            }
+            if (!sourceNode.IsInvalid()) {
+                if (!sourceNode.IsValid() ||
+                    sourceNode.Index() >
+                            externalRefs->NodeCountForFormatBounds()) {
+                    return 0;
+                }
+                const BlockInfoDescriptorExternalRef *externalRef =
+                        externalRefs->FindReference(sourceNode);
+                const bool hasInlineSceneMobil =
+                        externalRef == nullptr &&
+                        stream->offset <= stream->byteCount &&
+                        stream->byteCount - stream->offset >= 4u &&
+                        ReadU32LE(stream->bytes + stream->offset) ==
+                                TMNF_CLASS_CSceneMobil;
+                if (externalRef == nullptr && variant < 64u &&
+                    !models->RecordArchiveLocalRef(
+                            sourceNode.Index(),
+                            {selectorGroup, variant, mobil},
+                            hasInlineSceneMobil)) {
+                    return 0;
+                }
+            }
+            if (!blockinfo_descriptor_skip_or_parse_nod_ref_value(
+                        stream,
+                        sourceNode,
+                        descriptorPath,
+                        externalRefs,
+                        selectorGroup,
+                        variant,
+                        mobil,
+                        nullptr,
+                        BlockInfoDescriptorNodRefPurpose_BlockMobil,
+                        models)) {
                 return 0;
             }
             total++;
@@ -1201,6 +1422,7 @@ struct BlockInfoDescriptorParseContext {
     std::vector<BlockInfoDescriptorUnitDefinition> &airUnitDefinitions;
     BlockInfoParsedMobilCollection &models;
     bool continueAfterMainBlockInfoChunk;
+    bool *wrongRootPylonChunkOut;
     bool parsedMobilArrays = false;
 };
 
@@ -1296,6 +1518,82 @@ bool ParseHelperSources(
                     &context.descriptor.helperCommonDescriptorPath));
 }
 
+bool ParsePylonSources(BlockInfoDescriptorParseContext &context) {
+    if (context.descriptor.parsedPylonSourceChunk) {
+        return false;
+    }
+    std::array<std::optional<BlockInfoParsedMobilSlot>, 3> parsed{};
+    std::array<ArchiveNodeReference, 3> sourceNodes{};
+    std::size_t sourceCount = 0u;
+    for (std::size_t index = 0u; index < parsed.size(); ++index) {
+        std::optional<BlockInfoParsedMobilSlot> &source = parsed[index];
+        ArchiveNodeReference sourceNode = ArchiveNodeReference::Invalid();
+        if (!context.stream.ReadArchiveNodeRef(&sourceNode)) {
+            return false;
+        }
+        if (sourceNode.IsInvalid()) {
+            continue;
+        }
+        sourceCount++;
+        if (!sourceNode.IsValid() ||
+            sourceNode.Index() >=
+                    context.externalRefs.NodeCountForFormatBounds()) {
+            return false;
+        }
+        sourceNodes[index] = sourceNode;
+        for (std::size_t prior = 0u; prior < index; ++prior) {
+            if (!sourceNode.Matches(sourceNodes[prior])) {
+                continue;
+            }
+            if (!parsed[prior].has_value()) {
+                return false;
+            }
+            source = parsed[prior];
+            break;
+        }
+        if (source.has_value()) {
+            continue;
+        }
+        const BlockInfoDescriptorExternalRef *externalRef =
+                context.externalRefs.FindReference(sourceNode);
+        if (externalRef == nullptr) {
+            source = context.models.ResolveArchiveLocalSource(sourceNode);
+        }
+        if (source.has_value()) {
+            continue;
+        }
+        const BlockInfoParsedMobilSlot parsedSource{
+            static_cast<u32>(5u + index), 0u, 0u};
+        if (externalRef == nullptr &&
+            !context.models.RecordArchiveLocalRef(
+                    sourceNode.Index(), parsedSource, true)) {
+            return false;
+        }
+        const u32 firstModel = context.models.Count();
+        if (!blockinfo_descriptor_skip_or_parse_nod_ref_value(
+                    &context.stream,
+                    sourceNode,
+                    context.descriptorPath,
+                    &context.externalRefs,
+                    parsedSource.selectorGroup,
+                    parsedSource.variantIndex,
+                    parsedSource.mobilIndex,
+                    nullptr,
+                    BlockInfoDescriptorNodRefPurpose_PylonMobil,
+                    &context.models) ||
+            context.models.Count() == firstModel) {
+            return false;
+        }
+        source = parsedSource;
+    }
+    if (sourceCount != 0u && sourceCount != parsed.size()) {
+        return false;
+    }
+    context.descriptor.pylonSourceMobils = parsed;
+    context.descriptor.parsedPylonSourceChunk = true;
+    return true;
+}
+
 BlockInfoDescriptorChunkResult ParseSupplementalBlockInfoChunk(
         BlockInfoDescriptorParseContext &context,
         u32 chunkId) {
@@ -1353,6 +1651,24 @@ BlockInfoDescriptorChunkResult ParseSupplementalBlockInfoChunk(
         context.descriptor.hasBlockInfoIso4A = 1u;
         context.descriptor.hasBlockInfoIso4B = 1u;
         return BlockInfoDescriptorChunkResult::Continue;
+    case TMNF_CLASS_CGameCtnBlockInfoRoad:
+        return context.descriptor.descriptorClassId ==
+                           TMNF_CLASS_CGameCtnBlockInfoRoad &&
+                       context.stream.SkipNodRef()
+                ? BlockInfoDescriptorChunkResult::Continue
+                : BlockInfoDescriptorChunkResult::Error;
+    case TMNF_CLASS_CGameCtnBlockInfoPylon:
+        if (context.descriptor.descriptorClassId !=
+                TMNF_CLASS_CGameCtnBlockInfoPylon) {
+            if (context.wrongRootPylonChunkOut != nullptr) {
+                *context.wrongRootPylonChunkOut = true;
+            }
+            return BlockInfoDescriptorChunkResult::Error;
+        }
+        if (!ParsePylonSources(context)) {
+            return BlockInfoDescriptorChunkResult::Error;
+        }
+        return BlockInfoDescriptorChunkResult::Continue;
     default: {
         u32 magic = 0u;
         u32 size = 0u;
@@ -1369,6 +1685,9 @@ BlockInfoDescriptorChunkResult ParseSupplementalBlockInfoChunk(
 std::optional<BlockInfoDescriptorParseOutput>
 BlockInfoDescriptorMobilParser::ParseDescriptorAndModels(
         const BlockInfoDescriptorParseRequest &request) {
+    if (request.wrongRootPylonChunkOut != nullptr) {
+        *request.wrongRootPylonChunkOut = false;
+    }
     if (request.bytes == nullptr || request.descriptorPath == nullptr) {
         return std::nullopt;
     }
@@ -1380,6 +1699,7 @@ BlockInfoDescriptorMobilParser::ParseDescriptorAndModels(
 
     BlockInfoDescriptorParseOutput output{};
     output.descriptor.counts.Init();
+    output.descriptor.descriptorClassId = externalRefs.ClassId();
     if (!assign_cstr_to_string(
                 &output.descriptor.descriptorPath, request.descriptorPath)) {
         return std::nullopt;
@@ -1406,6 +1726,7 @@ BlockInfoDescriptorMobilParser::ParseDescriptorAndModels(
         output.descriptor.airUnitDefinitions,
         output.models,
         request.continueAfterMainBlockInfoChunk,
+        request.wrongRootPylonChunkOut,
     };
     for (;;) {
         u32 chunkId = 0u;

@@ -26,6 +26,10 @@ std::optional<EBlockType> BlockTypeForArchiveClass(u32 classId) {
             return EBlockType::Road;
         case TMNF_CLASS_CGameCtnBlockInfoClip:
             return EBlockType::Clip;
+        case TMNF_CLASS_CGameCtnBlockInfoSlope:
+            return EBlockType::Slope;
+        case TMNF_CLASS_CGameCtnBlockInfoPylon:
+            return EBlockType::Pylon;
         case TMNF_CLASS_CGameCtnBlockInfoRectAsym:
             return EBlockType::RectAsym;
         default:
@@ -33,26 +37,9 @@ std::optional<EBlockType> BlockTypeForArchiveClass(u32 classId) {
     }
 }
 
-bool IsConstructionBlockInfoPath(std::string_view path) {
-    return path.find("ConstructionBlockInfo") != std::string_view::npos;
-}
-
-std::optional<u32> CollectionLandZoneHeight(
-        const BlockInfoCatalogIdentity &identity,
-        EBlockType blockType) {
-    if (identity.collection != "Stadium" ||
-        blockType > EBlockType::Frontier) {
-        return std::nullopt;
-    }
-    if (identity.identifier == "StadiumDirtHill") {
-        return 2u;
-    }
-    if (identity.identifier == "StadiumDirtBorder" ||
-        identity.identifier == "StadiumDirt" ||
-        identity.identifier == "StadiumGrass") {
-        return 0u;
-    }
-    return std::nullopt;
+bool IsBlockInfoDescriptorPath(std::string_view path) {
+    return path.find("ConstructionBlockInfo") != std::string_view::npos ||
+           path.find("TrackManiaElementDesc") != std::string_view::npos;
 }
 
 bool TryAddPackFile(const CPlugFilePack &pack,
@@ -67,7 +54,7 @@ bool TryAddPackFile(const CPlugFilePack &pack,
 
     std::array<char, CGameCtnReplayStaticDescriptorPathCapacity> path{};
     if (!pack.FileDescPlainPath(&file, path.data(), path.size()) ||
-        !IsConstructionBlockInfoPath(path.data())) {
+        !IsBlockInfoDescriptorPath(path.data())) {
         return true;
     }
 
@@ -82,15 +69,13 @@ bool TryAddPackFile(const CPlugFilePack &pack,
         return true;
     }
 
-    const std::optional<u32> landZoneHeight =
-            CollectionLandZoneHeight(identity, *blockType);
     BlockInfoCatalogEntry entry;
     try {
         entry.identifier = std::move(identity.identifier);
         entry.collection = std::move(identity.collection);
+        entry.selectedDescriptorPath = path.data();
         entry.blockType = *blockType;
         entry.asset = assets.Register(path.data());
-        entry.collectionLandZoneHeight = landZoneHeight;
     } catch (const std::bad_alloc &) {
         return false;
     }

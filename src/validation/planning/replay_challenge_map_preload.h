@@ -33,21 +33,28 @@ public:
             const CGameCtnReplayMapInput &input,
             ReplayAssetRepository &assets,
             ReplaySimulationSession &simulationSession);
+    ReplayChallengePreloadResult Preload(
+            const CGameCtnReplayMapInput &input,
+            ReplayAssetRepository &mapAssets,
+            ReplayAssetRepository &decorationAssets,
+            ReplaySimulationSession &simulationSession);
     const std::optional<ReplayWaterDefinition> &WaterDefinition(void) const;
 
 private:
-    ReplayAssetRepository *assets = nullptr;
+    ReplayAssetRepository *mapAssets = nullptr;
+    ReplayAssetRepository *decorationAssets = nullptr;
     ReplaySimulationSession *simulationSession = nullptr;
     CGameCtnReplayMapInput mapInput{};
     ReplaySceneDefinition sceneDefinition{};
-    ReplaySceneBlockPlacements constructedBlockPlacements{};
     bool sceneDefinitionReady = false;
     std::optional<ReplayWaterDefinition> waterDefinition;
 
-    ReplayChallengePreloadResult PreloadMapInput();
+    ReplayChallengePreloadResult PreloadMapInput(
+            CGameCtnChallenge &challenge);
     ReplayChallengePreloadResult PreloadSceneDefinition();
     ReplayChallengePreloadResult PreloadChallengeConstruction();
-    ReplayChallengePreloadResult PreloadStaticSolidSources();
+    ReplayChallengePreloadResult PreloadStaticSolidSources(
+            CGameCtnChallengeConstruction &construction);
 };
 
 #endif

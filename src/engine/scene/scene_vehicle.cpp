@@ -220,6 +220,10 @@ void CSceneVehicle::SetSolid(CPlugSolid *solid) {
     VehicleInitFromSolid();
 }
 
+void CSceneVehicle::OnEnterScene(void) {
+    CSceneMobil::OnEnterScene();
+}
+
 void CSceneVehicle::VehicleReset(void) {
     CSceneMobil::VehicleReset();
     water.splashPending = false;

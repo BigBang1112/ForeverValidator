@@ -103,8 +103,13 @@ void CGameCtnBlockInfoPylon::SetSourceMobils(
 
 int CGameCtnBlockInfoClip::IsClipCompatible(
         CGameCtnBlockInfoClip *other) {
-    return other != nullptr &&
-           compatibleClipId_ == other->compatibleClipId_;
+    if (other == nullptr) {
+        return 0;
+    }
+    if (compatibleClipId_.IsInvalid()) {
+        return this == other;
+    }
+    return compatibleClipId_ == other->identifier.id;
 }
 
 BlockInfoAssetHandle CGameCtnBlockInfoClip::SourceAsset(void) const {

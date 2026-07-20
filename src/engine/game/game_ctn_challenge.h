@@ -113,6 +113,9 @@ private:
     u32 mapWidth = 0u;
     u32 mapHeight = 0u;
     u32 mapDepth = 0u;
+    float collectionSquareSize_ = 32.0f;
+    float collectionSquareHeight_ = 8.0f;
+    u32 blockMobilUpdateSerial_ = 0u;
     bool hasTerrainData = false;
     bool hasPylonData = false;
     SGameCtnIdentifier decorationId;
@@ -123,14 +126,30 @@ private:
 
     std::vector<CMwNodRef<CGameCtnBlockInfo>> ownedBlockInfos_;
     std::vector<std::unique_ptr<CGameCtnBlock>> blocks_;
+    std::vector<std::unique_ptr<CGameCtnBlock>> retiredBlocks_;
+
+    struct BlockSuppressionCandidate {
+        CGameCtnBlock *target = nullptr;
+        const CGameCtnBlock *suppressor = nullptr;
+    };
+    std::vector<BlockSuppressionCandidate> blockSuppressionCandidates_;
+
+    bool IsActiveBlock(const CGameCtnBlock *block) const;
+    void RebindSuppressedBlocksAfterRemoval(CGameCtnBlock *block);
 
 public:
     CGameCtnChallenge(void);
     ~CGameCtnChallenge(void) override;
 
     void SetMapSize(const GmNat3 &size);
+    void SetCollectionGrid(float squareSize, float squareHeight);
     GmNat3 MapSize(void) const;
     u32 MapHeight(void) const;
+    float CollectionSquareSize(void) const;
+    float CollectionSquareHeight(void) const;
+    void ConfigureReplayConstructionData(bool terrainData, bool pylonData);
+    bool HasReplayPylonData(void) const;
+    void CreateBlocksAndPylons(void);
 
     virtual void InitChallengeData(const SCtnForcedMods *forcedMods);
     void FastInitChallengeData(CGameCtnCollection *collection,
@@ -144,6 +163,7 @@ public:
                                CGameCtnBlockSkin *skin);
     void CreateMobilForBlock(CGameCtnBlock *block);
     void CreateMobilForClip(CGameCtnBlock *block);
+    int UpdateClip(GmNat3 coord);
 
     unsigned char GetNeighbourPylonIndex(unsigned char index);
     CGameCtnPylonColumn *GetColumnNorth(GmNat3 coord);
@@ -237,6 +257,9 @@ public:
                            unsigned long pylonHeight);
     void AddMobilToRemoveList(CSceneMobil *mobil);
     void AddBlockToRemoveList(CGameCtnBlock *block);
+    void ReplaceBlock(CGameCtnBlock *block);
+    int RemoveBlock(CGameCtnBlock *block);
+    void UpdateBlockMobils(void);
     int IsBlockOnGround(CGameCtnBlockInfo *blockInfo,
                         GmNat3 coord,
                         ECardinalDir direction);
@@ -244,8 +267,8 @@ public:
     CGameCtnChapter *GetChapter(void) const;
     CSystemPackDesc *GetModPackDesc(const SCtnForcedMods *forcedMods);
     void LoadDecorationAndCollection(const SCtnForcedMods *forcedMods);
+    int CheckTerrainBlock(CGameCtnBlock *block);
     CGameCtnBlockInfo *GetDescFromBlock(CGameCtnBlock *block);
-    void CreateBlocksAndPylons(void);
     int UpdateFieldUnits(CGameCtnBlock *block);
     CGameCtnBlockInfoClip *GetRequiredBlockUnitJunction(
             GmNat3 coord,
@@ -266,6 +289,14 @@ public:
     CGameCtnBlockInfo &OwnBlockInfo(std::unique_ptr<CGameCtnBlockInfo> blockInfo);
     CGameCtnBlock *AddLoadedBlock(std::unique_ptr<CGameCtnBlock> block);
     const std::vector<std::unique_ptr<CGameCtnBlock>> &Blocks(void) const;
+    void RegisterBlockSuppression(CGameCtnBlock *target,
+                                  const CGameCtnBlock *suppressor);
+    void CopyBlockSuppressionCandidates(CGameCtnBlock *target,
+                                        const CGameCtnBlock *source);
+    u32 BlockMobilUpdateSerial(void) const;
+    void ReleaseRetiredBlockOwnersAfterMobilRemoval(void);
+    void ReleaseRetiredBlockOwnersAfterMobilRemovalIf(
+            const std::function<bool(const CGameCtnBlock &)> &canRelease);
     void ClearConstructedBlocks(void);
 
 };

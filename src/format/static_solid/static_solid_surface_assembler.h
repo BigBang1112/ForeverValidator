@@ -99,10 +99,10 @@ private:
             u32 materialSlotCount);
     int LinkSurfacesToGeoms(
             const CGameCtnReplayStaticSolidArchiveSurfaceGraph &surfaces);
-    void ApplySurfaceMaterialEntry(
+    int ApplySurfaceMaterialEntry(
             CGameCtnReplayStaticSolidArchiveNodeIdentity surface,
             const CGameCtnReplayStaticSolidArchiveSurfaceMaterialEntry &entry);
-    void ApplySurfaceMaterialEntries(
+    int ApplySurfaceMaterialEntries(
             const CGameCtnReplayStaticSolidArchiveSurfaceGraph &surfaces);
     void MaterializeArchiveVisualProvider(
             u32 visualProviderIndex,

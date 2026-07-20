@@ -10,21 +10,13 @@
 
 #include "format/archive/classic_archive_reader.h"
 #include "format/pack/installed/plug_file_pack.h"
+#include "format/pack/installed_vehicle_asset_graph.h"
 #include "format/pack/installed/plug_file_pack_crypto_constants.h"
 #include "format/archive/scene_vehicle_car_archive_schema.h"
 #include "format/vehicle_tuning/default_vehicle_archive_schema.h"
 #include "format/archive/tmnf_archive_ids.h"
 #include "format/archive/tmnf_gbx_body_reader.h"
 #include <new>
-constexpr const char *DefaultVehicleCarPackPath =
-        "Vehicles\\Mobil\\221B72A085FC68F1D884D31B6948525182";
-constexpr const char *DefaultVehicleMaterialsPackPath =
-        "Vehicles\\F2CDCF9D116FCD6B5A5D097E6526E6125B";
-constexpr const char *DefaultVehicleStructPackPath =
-        "Vehicles\\B2BF3F79BBB3C147236CAE6FD05B733B19";
-constexpr const char *DefaultVehicleFakeContactTexturePackPath =
-        "Vehicles\\Media\\Texture\\C10BB241E673228CB9AB4AB83F53509ED2";
-constexpr u32 DefaultVehicleMaterialCount = 13u;
 constexpr u32 DefaultVehicleMaterialNaturalIdCount = 31u;
 constexpr u32 ClassicArchiveEndMarker = 0xfacade01u;
 constexpr u32 ClassicArchiveSkipMarker = 0x534b4950u;
@@ -267,7 +259,7 @@ static int parse_default_vehicle_materials_member(
     }
     VehicleMaterialSetDefinition materialSet;
     try {
-        materialSet.materials.reserve(DefaultVehicleMaterialCount);
+        materialSet.materials.reserve(DefaultVehicleMaterialNaturalIdCount);
     } catch (const std::bad_alloc &) {
         return 0;
     }
@@ -284,8 +276,8 @@ static int parse_default_vehicle_materials_member(
         elementClassId != TMNF_CLASS_CSceneVehicleMaterial ||
         !archive.ReadU32(serializationVersion) || serializationVersion != 1u ||
         !archive.ReadU32(allocationIncrement) || allocationIncrement == 0u ||
-        !archive.ReadU32(materialCount) ||
-        materialCount != DefaultVehicleMaterialCount) {
+        !archive.ReadU32(materialCount) || materialCount == 0u ||
+        materialCount > DefaultVehicleMaterialNaturalIdCount) {
         return 0;
     }
     u32 previousNodeReference = 0u;
@@ -349,6 +341,20 @@ static int parse_default_vehicle_fake_contact_texture(
 std::optional<DefaultVehiclePackData>
 DefaultVehiclePackArchive::LoadFromPack(
         CPlugFilePack &pack) {
+    std::optional<InstalledVehicleAssetGraph> assets =
+            InstalledVehicleAssetGraph::ResolveFromPack(pack);
+    return assets.has_value()
+            ? LoadFromPack(pack, *assets)
+            : std::nullopt;
+}
+
+std::optional<DefaultVehiclePackData>
+DefaultVehiclePackArchive::LoadFromPack(
+        CPlugFilePack &pack,
+        const InstalledVehicleAssetGraph &assets) {
+    if (!assets.IsComplete()) {
+        return std::nullopt;
+    }
     try {
         std::vector<uint8_t> carBytes;
         std::vector<uint8_t> materialBytes;
@@ -358,16 +364,16 @@ DefaultVehiclePackArchive::LoadFromPack(
         DefaultVehiclePackData result;
         const bool loaded =
                 extract_pack_path_bytes(
-                        pack, TmnfDefaultVehicleTuningsPackPath, &tuningBytes) &&
-                extract_pack_path_bytes(pack, DefaultVehicleCarPackPath,
+                        pack, assets.tuning.selectedPath.c_str(), &tuningBytes) &&
+                extract_pack_path_bytes(pack, assets.mobil.selectedPath.c_str(),
                                         &carBytes) &&
-                extract_pack_path_bytes(pack, DefaultVehicleMaterialsPackPath,
+                extract_pack_path_bytes(pack, assets.materials.selectedPath.c_str(),
                                         &materialBytes) &&
-                extract_pack_path_bytes(pack, DefaultVehicleStructPackPath,
+                extract_pack_path_bytes(pack, assets.vehicleStruct.selectedPath.c_str(),
                                         &structBytes) &&
                 extract_pack_path_bytes(
                         pack,
-                        DefaultVehicleFakeContactTexturePackPath,
+                        assets.fakeContactTexture.selectedPath.c_str(),
                         &fakeContactTextureBytes) &&
                 parse_default_vehicle_mobil_member(carBytes, &result.vehicle) &&
                 parse_default_vehicle_materials_member(materialBytes,

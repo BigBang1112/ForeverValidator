@@ -36,8 +36,27 @@ void CSceneVehicleWaterZone::Configure(
         const WaterOccupancyGrid &occupancy,
         float surfaceHeight,
         float secondaryCullHeight) {
-    const unsigned char outside =
-            static_cast<unsigned char>(occupancy.outside);
+    const bool declaresPlaneMap =
+            !occupancy.planeIndices.empty() ||
+            !occupancy.planes.empty() ||
+            occupancy.outsidePlaneIndex != 0u;
+    const bool hasPlaneMap =
+            declaresPlaneMap &&
+            occupancy.planeIndices.size() == occupancy.cells.size() &&
+            occupancy.outsidePlaneIndex <= occupancy.planes.size() &&
+            std::all_of(
+                    occupancy.planeIndices.begin(),
+                    occupancy.planeIndices.end(),
+                    [&occupancy](std::uint8_t index) {
+                        return index <= occupancy.planes.size();
+                    });
+    if (declaresPlaneMap && !hasPlaneMap) {
+        Disable();
+        return;
+    }
+    const unsigned char outside = hasPlaneMap
+            ? occupancy.outsidePlaneIndex
+            : static_cast<unsigned char>(occupancy.outside);
     waterMap.Init(occupancy.cellSize,
                   occupancy.origin,
                   occupancy.dimensions,
@@ -49,8 +68,9 @@ void CSceneVehicleWaterZone::Configure(
             if (index >= occupancy.cells.size()) {
                 break;
             }
-            const unsigned char value =
-                    static_cast<unsigned char>(occupancy.cells[index]);
+            const unsigned char value = hasPlaneMap
+                    ? occupancy.planeIndices[index]
+                    : static_cast<unsigned char>(occupancy.cells[index]);
             waterMap.SetValue({x, y}, value);
         }
     }

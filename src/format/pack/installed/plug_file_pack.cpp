@@ -3,15 +3,20 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <zlib.h>
 
 #include "format/archive/classic_buffer_crypted.h"
 #include "format/archive/archive_binary.h"
+#include "format/archive/archive_class_ids.h"
+#include "format/pack/installed/installed_pack_key_catalog.h"
 #include "format/pack/installed/scene_descriptor_folder_paths.h"
 #include "format/pack/installed/plug_file_pack_crypto_constants.h"
 #include "format/static_solid/static_scene_archive_loader.h"
@@ -24,6 +29,21 @@ static size_t pack_cstring_length(const char *text) {
         length++;
     }
     return length;
+}
+
+int CommitArchiveFeedbackExtraction(
+        ByteBuffer &&decoded,
+        int readerError,
+        ByteBuffer *out) {
+    if (out == nullptr) {
+        return 0;
+    }
+    out->Clear();
+    if (readerError != 0) {
+        return 0;
+    }
+    *out = std::move(decoded);
+    return 1;
 }
 
 static int pack_strings_equal(const char *lhs, const char *rhs) {
@@ -98,21 +118,37 @@ int CPlugFileFidContainer_SFileDesc::ShouldTryStreamFeedbackExtraction(
         const char *selectedPath) const {
     const int isDefaultVehicleTunings =
             IsDefaultVehicleTuningsPath(selectedPath);
+    const int isVehicleTunings =
+            classId == TMNF_CLASS_CSceneVehicleTunings;
+    const int isVehicleStruct =
+            classId == TMNF_CLASS_CSceneVehicleStruct;
+    const int isMaterial =
+            classId == TMNF_CLASS_CPlugMaterial;
+    const int isShaderApply =
+            classId == TMNF_CLASS_CPlugShaderApply;
+    const int isBitmap = classId == TMNF_CLASS_CPlugBitmap;
+    const int isZoneDescriptor =
+            classId == TMNF_CLASS_CGameCtnZoneFlat ||
+            classId == TMNF_CLASS_CGameCtnZoneFrontier;
     const int streamFeedbackDescriptor =
             selectedPath != nullptr &&
-            (SceneDescriptorFolderPaths::IsConstructionBlockInfoPath(
+            (SceneDescriptorFolderPaths::IsBlockInfoDescriptorPath(
                      selectedPath) ||
-             SceneDescriptorFolderPaths::IsStadiumMobilPath(selectedPath) ||
-             SceneDescriptorFolderPaths::IsRacesMobilPath(selectedPath) ||
-             SceneDescriptorFolderPaths::IsStadiumMediaSolidPath(
+             SceneDescriptorFolderPaths::IsZoneDescriptorPath(selectedPath) ||
+             SceneDescriptorFolderPaths::IsMobilDescriptorPath(selectedPath) ||
+             SceneDescriptorFolderPaths::IsMediaSolidPath(
                      selectedPath) ||
+             isVehicleTunings || isVehicleStruct || isZoneDescriptor ||
+             isMaterial || isShaderApply || isBitmap ||
              isDefaultVehicleTunings);
-    return (IsEncryptedPayload() || isDefaultVehicleTunings) &&
+    return (IsEncryptedPayload() || isVehicleTunings ||
+            isDefaultVehicleTunings) &&
            streamFeedbackDescriptor;
 }
 
 struct CPlugFilePackLoadHeadersReader {
     std::unique_ptr<CClassicBufferCrypted> crypted;
+    ByteBuffer plainHeader;
 
     int Read(void *out, size_t byteCount);
     int ReadU32(u32 *out);
@@ -142,19 +178,21 @@ static int Md5CString(const char *text, unsigned char digest[16]) {
            Md5Bytes((const unsigned char *)text, pack_cstring_length(text), digest);
 }
 
-static int derive_pack_key_from_packlist_string(const char *packKey,
-                                                SNat128 &key) {
+int CPlugFilePack::ComputeKey(const char *keyString, SNat128 &keyOut) {
     char seed[128];
     unsigned char digest[16];
-    if (packKey == nullptr ||
-        snprintf(seed, sizeof(seed), "%sNadeoPak", packKey) >=
-                (int)sizeof(seed) ||
+    if (keyString == nullptr) {
+        return 0;
+    }
+    const int seedSize =
+            snprintf(seed, sizeof(seed), "%sNadeoPak", keyString);
+    if (seedSize < 0 || seedSize >= (int)sizeof(seed) ||
         !Md5CString(seed, digest)) {
         return 0;
     }
-    for (u32 wordIndex = 0u; wordIndex < key.words.size(); ++wordIndex) {
+    for (u32 wordIndex = 0u; wordIndex < keyOut.words.size(); ++wordIndex) {
         const u32 offset = wordIndex * 4u;
-        key.words[wordIndex] =
+        keyOut.words[wordIndex] =
                 (static_cast<u32>(digest[offset]) << 24u) |
                 (static_cast<u32>(digest[offset + 1u]) << 16u) |
                 (static_cast<u32>(digest[offset + 2u]) << 8u) |
@@ -163,89 +201,23 @@ static int derive_pack_key_from_packlist_string(const char *packKey,
     return 1;
 }
 
-static int ReadPacklistStadiumKey(
-        const unsigned char *data,
-        size_t size,
-        char keyOut[33]) {
-    if (data == nullptr || size < 10u) {
-        return 0;
-    }
-    const u32 count = data[1];
-    const u32 seedNatural = TmnfFormat::ArchiveBinary::ReadU32LE(data + 6u);
-    char seedText[32];
-    char nameSeed[128];
-    unsigned char nameDigest[16];
-    snprintf(seedText, sizeof(seedText), "%u", seedNatural);
-    if (snprintf(nameSeed, sizeof(nameSeed), "%s%s",
-                 TmnfPackListNameSalt, seedText) >= (int)sizeof(nameSeed) ||
-        !Md5CString(nameSeed, nameDigest)) {
-        return 0;
-    }
-    size_t offset = 10u;
-    for (u32 index = 0; index < count; index++) {
-        if (offset + 2u > size) {
-            return 0;
-        }
-        const unsigned char flags = data[offset];
-        const unsigned char nameLen = data[offset + 1u];
-        if (nameLen > 0x1fu || offset + 2u + nameLen + 0x20u > size) {
-            return 0;
-        }
-        char name[64];
-        for (u32 i = 0; i < nameLen; i++) {
-            name[i] = (char)(data[offset + 2u + i] ^ nameDigest[i & 0x0fu]);
-        }
-        name[nameLen] = '\0';
-        const size_t keyOffset = offset + 2u + nameLen;
-        char keySeed[160];
-        if ((flags & 1u) != 0u) {
-            if (snprintf(keySeed, sizeof(keySeed), "%s%s%s",
-                         name, seedText, TmnfPackKeySaltOdd) >=
-                    (int)sizeof(keySeed)) {
-                return 0;
-            }
-        } else if (snprintf(keySeed, sizeof(keySeed), "%s%s%s",
-                            name, seedText, TmnfPackKeySaltEven) >=
-                   (int)sizeof(keySeed)) {
-            return 0;
-        }
-        unsigned char keyDigest[16];
-        if (!Md5CString(keySeed, keyDigest)) {
-            return 0;
-        }
-        char decodedKey[33];
-        for (u32 i = 0; i < 0x20u; i++) {
-            decodedKey[i] = (char)(data[keyOffset + i] ^ keyDigest[i & 0x0fu]);
-        }
-        decodedKey[32] = '\0';
-        if (pack_strings_equal(name, "stadium")) {
-            copy_pack_chars(keyOut, decodedKey, 33u);
-            return 1;
-        }
-        offset = keyOffset + 0x20u;
-    }
-    return 0;
-}
-
 static int inflate_static_solid_part(const unsigned char *input,
                                      u32 inputByteCount,
                                      unsigned char *output,
                                      u32 outputByteCount) {
-    z_stream stream{};
-    stream.next_in = (Bytef *)input;
-    stream.avail_in = inputByteCount;
-    stream.next_out = output;
-    stream.avail_out = outputByteCount;
-    if (inflateInit(&stream) != Z_OK) {
+    if (input == nullptr || (output == nullptr && outputByteCount != 0u)) {
         return 0;
     }
-    const int status = inflate(&stream, Z_NO_FLUSH);
-    const int ok = stream.total_out == outputByteCount &&
-                   (status == Z_OK ||
-                    status == Z_STREAM_END ||
-                    stream.avail_out == 0u);
-    inflateEnd(&stream);
-    return ok;
+    unsigned char emptyOutput = 0u;
+    uLongf actualOutputByteCount = outputByteCount;
+    uLong actualInputByteCount = inputByteCount;
+    return uncompress2(
+                   outputByteCount != 0u ? output : &emptyOutput,
+                   &actualOutputByteCount,
+                   input,
+                   &actualInputByteCount) == Z_OK &&
+           actualOutputByteCount == static_cast<uLongf>(outputByteCount) &&
+           actualInputByteCount == static_cast<uLong>(inputByteCount);
 }
 
 CPlugFilePack::CPlugFilePack() {
@@ -261,12 +233,17 @@ int CPlugFilePack::IsCrypted(void) const {
     return !key.IsNull();
 }
 
+const std::string &CPlugFilePack::PackName(void) const {
+    return packName_;
+}
+
 int CPlugFilePackLoadHeadersReader::Read(void *out, size_t requestedByteCount) {
-    return crypted != nullptr &&
+    return crypted != nullptr && out != nullptr &&
            requestedByteCount <= UINT32_MAX &&
            crypted->Read(out,
                          static_cast<unsigned long>(requestedByteCount)) ==
-                   requestedByteCount;
+                   requestedByteCount &&
+           plainHeader.Append(out, requestedByteCount);
 }
 
 int CPlugFilePackLoadHeadersReader::ReadU32(u32 *out) {
@@ -291,7 +268,7 @@ int CPlugFilePackLoadHeadersReader::ReadString(std::string *out) {
     u32 byteCount = 0u;
     if (out == nullptr ||
         !ReadU32(&byteCount) ||
-        byteCount > 0x0fffffffu) {
+        byteCount > 0x0000ffffu) {
         return 0;
     }
     try {
@@ -312,6 +289,7 @@ void CPlugFilePack::FreeLoadedPack() {
     bytes.Clear();
     key = {};
     dataStart = 0u;
+    packName_.clear();
 }
 
 int CPlugFilePack::LoadHeadersFromMemory() {
@@ -349,7 +327,10 @@ int CPlugFilePack::LoadHeadersFromMemory() {
     }
     for (u32 i = 0u; i < loadedFolderCount; i++) {
         if (!reader.ReadU32(&folders[i].parent) ||
-            !reader.ReadString(&folders[i].name)) {
+            !reader.ReadString(&folders[i].name) ||
+            (folders[i].parent != 0xffffffffu &&
+             (folders[i].parent >= loadedFolderCount ||
+              folders[i].parent == i))) {
             return 0;
         }
     }
@@ -379,11 +360,31 @@ int CPlugFilePack::LoadHeadersFromMemory() {
             !reader.ReadU32(&files[i].compressedSize) ||
             !reader.ReadU32(&files[i].offsetRel) ||
             !reader.ReadU32(&files[i].classId) ||
-            !reader.ReadU64(&files[i].flags)) {
+            !reader.ReadU64(&files[i].flags) ||
+            (files[i].folderIndex != 0xffffffffu &&
+             files[i].folderIndex >= loadedFolderCount)) {
             return 0;
         }
     }
-    return 1;
+    if (reader.crypted->Error() || dataStart > bytes.Size() ||
+        dataStart < 20u ||
+        reader.plainHeader.Size() > dataStart - 20u ||
+        reader.plainHeader.Size() < 16u) {
+        return 0;
+    }
+    unsigned char expectedDigest[16];
+    copy_pack_bytes(
+            expectedDigest, reader.plainHeader.Data(), sizeof(expectedDigest));
+    for (std::size_t index = 0u; index < sizeof(expectedDigest); ++index) {
+        reader.plainHeader.Data()[index] = 0u;
+    }
+    unsigned char computedDigest[16];
+    return Md5Bytes(
+                   reader.plainHeader.Data(),
+                   reader.plainHeader.Size(),
+                   computedDigest) &&
+           CRYPTO_memcmp(
+                   expectedDigest, computedDigest, sizeof(expectedDigest)) == 0;
 }
 
 int CPlugFilePack::OpenFromMemory(
@@ -391,20 +392,60 @@ int CPlugFilePack::OpenFromMemory(
         size_t pakByteCount,
         const void *packlistBytes,
         size_t packlistByteCount) {
+    return OpenFromMemory(
+            pakBytes,
+            pakByteCount,
+            packlistBytes,
+            packlistByteCount,
+            "Stadium");
+}
+
+int CPlugFilePack::OpenFromMemory(
+        const void *pakBytes,
+        size_t pakByteCount,
+        const void *packlistBytes,
+        size_t packlistByteCount,
+        const char *packName) {
     if ((pakBytes == nullptr && pakByteCount != 0u) ||
         (packlistBytes == nullptr && packlistByteCount != 0u)) {
         return 0;
     }
+    InstalledPackKeyCatalog keyCatalog;
+    if (!keyCatalog.LoadFromMemory(packlistBytes, packlistByteCount)) {
+        FreeLoadedPack();
+        return 0;
+    }
+    return OpenFromMemory(pakBytes, pakByteCount, keyCatalog, packName);
+}
+
+int CPlugFilePack::OpenFromMemory(
+        const void *pakBytes,
+        size_t pakByteCount,
+        const InstalledPackKeyCatalog &keyCatalog,
+        const char *packName) {
     FreeLoadedPack();
-    char packlistKey[33]{};
-    if (!bytes.Append(pakBytes, pakByteCount) ||
-        bytes.Size() < 20u ||
-        !ReadPacklistStadiumKey(
-                static_cast<const unsigned char *>(packlistBytes),
-                packlistByteCount,
-                packlistKey) ||
-        !derive_pack_key_from_packlist_string(packlistKey, key) ||
+    if (pakBytes == nullptr || pakByteCount < 20u ||
+        std::memcmp(pakBytes, "NadeoPak", 8u) != 0 ||
+        TmnfFormat::ArchiveBinary::ReadU32LE(
+                static_cast<const unsigned char *>(pakBytes) + 8u) != 3u) {
+        return 0;
+    }
+    const InstalledPackKeyEntry *entry = keyCatalog.Find(packName);
+    if (entry == nullptr ||
+        !ComputeKey(entry->keyString.c_str(), key) ||
+        !bytes.Append(pakBytes, pakByteCount) ||
         !LoadHeadersFromMemory()) {
+        FreeLoadedPack();
+        return 0;
+    }
+    try {
+        packName_ = entry->name;
+        if (!packName_.empty() && packName_[0] >= 'a' &&
+            packName_[0] <= 'z') {
+            packName_[0] = static_cast<char>(
+                    packName_[0] - 'a' + 'A');
+        }
+    } catch (const std::bad_alloc &) {
         FreeLoadedPack();
         return 0;
     }
@@ -436,7 +477,8 @@ int CPlugFilePack::FileDescPlainPath(
         return 0;
     }
     out[0] = '\0';
-    return FolderPathRecursive(file->folderIndex, out, outSize) &&
+    return (file->folderIndex == 0xffffffffu ||
+            FolderPathRecursive(file->folderIndex, out, outSize)) &&
            SceneDescriptorFolderPaths::AppendCString(
                    out, outSize, file->name.c_str());
 }
@@ -587,6 +629,9 @@ int CPlugFilePack::ExtractPathWithStreamFeedback(
         const CPlugFileFidContainer_SFileDesc *file,
         const char *selectedPath,
         ByteBuffer *out) const {
+    if (out != nullptr) {
+        out->Clear();
+    }
     if (file == nullptr || out == nullptr) {
         return 0;
     }
@@ -637,10 +682,73 @@ int CPlugFilePack::ExtractPath(
         return 0;
     }
     if (file->ShouldTryStreamFeedbackExtraction(selectedPath)) {
-        if (ExtractPathWithStreamFeedback(file, selectedPath, out)) {
-            return 1;
-        }
-        out->Clear();
+        return ExtractPathWithStreamFeedback(file, selectedPath, out);
     }
     return ExtractPathWithPackedPayload(*file, out);
+}
+
+int CPlugFilePack::ExtractPathWithStreamFeedbackStrict(
+        const char *selectedPath,
+        ByteBuffer *out) const {
+    if (out == nullptr) {
+        return 0;
+    }
+    out->Clear();
+    if (selectedPath == nullptr || selectedPath[0] == '\0') {
+        return 0;
+    }
+    const CPlugFileFidContainer_SFileDesc *file =
+            FindFileDescByPath(selectedPath);
+    if (file == nullptr) {
+        return 0;
+    }
+    if (!file->IsEncryptedPayload()) {
+        ByteBuffer decoded;
+        return ExtractPathWithPackedPayload(*file, &decoded) &&
+               CommitArchiveFeedbackExtraction(
+                       std::move(decoded), 0, out);
+    }
+    return ExtractPathWithStreamFeedback(file, selectedPath, out);
+}
+
+int CPlugFilePack::ExtractReferenceTablePrefix(
+        const char *selectedPath,
+        ByteBuffer *out) const {
+    if (selectedPath == nullptr || out == nullptr) {
+        return 0;
+    }
+    out->Clear();
+    const CPlugFileFidContainer_SFileDesc *file =
+            FindFileDescByPath(selectedPath);
+    if (file == nullptr) {
+        return 0;
+    }
+    if (!file->IsEncryptedPayload()) {
+        return ExtractPathWithPackedPayload(*file, out);
+    }
+
+    StaticSolidArchivePayload payload;
+    if (!payload.BuildEncryptedPackFilePayload({
+                *file,
+                dataStart,
+                0u,
+                0u,
+                "",
+                selectedPath}) ||
+        static_cast<size_t>(payload.PackPayloadOffset()) > bytes.Size() ||
+        payload.RawByteCount() >
+                bytes.Size() -
+                        static_cast<size_t>(payload.PackPayloadOffset())) {
+        return 0;
+    }
+    CGameCtnReplayStaticSolidDecodedPayload decoded;
+    return CGameCtnReplayStaticSolidArchivePayloadReader::
+                   DecodeReferenceTablePrefixWithStreamFeedback(
+                           key,
+                           payload,
+                           StaticSolidArchiveRawBytes::FromBytes(
+                                   bytes.Data() + payload.PackPayloadOffset(),
+                                   payload.RawByteCount()),
+                           &decoded) &&
+           decoded.IsReady() && decoded.CopyToByteBuffer(out);
 }

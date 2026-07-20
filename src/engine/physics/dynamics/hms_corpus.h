@@ -7,9 +7,12 @@
 #include "engine/physics/dynamics/hms_dyna.h"
 struct CHmsItem;
 struct CHmsPhysicalContact;
+struct CHmsCorpus;
 struct CHmsZone;
 struct CPlugTree;
 struct SHmsPhysicalCollision;
+
+void Zone_UpdateWaterHeights(CHmsCorpus *corpus);
 
 struct CHmsCorpus {
     CHmsCorpus(void);
@@ -41,6 +44,7 @@ struct CHmsCorpus {
     const GmIso4 *LocationIso(void) const;
     const GmIso4 *VirtualLocationIso(void);
     CPlugTree *CollisionTree(void) const;
+    int WaterGetPlaneEqInZone(GmVec4 &plane);
     CHmsCorpusId Id(void) const { return collisionManagerId; }
     int UsesLinearImpulseOnlyForSolveImpulse(void) const;
     GmIso4 LocationForSolveImpulse(void) const;

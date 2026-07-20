@@ -64,6 +64,11 @@ struct GmVec4 {
     float y;
     float z;
     float w;
+    unsigned long PlaneEqIsNearlyEqual(
+            const GmVec4 &other,
+            float normalDotThreshold,
+            float distanceThreshold) const;
+    void PlaneEqMult(const GmIso4 &iso);
 };
 
 enum class ECardinalDir : u32 {
@@ -122,6 +127,7 @@ struct GmQuat {
     void Normalize(void);
     void Set(const GmMat3 &mat);
     void SetSlerp(GmQuat from, const GmQuat &to, float blend);
+    void GetRotation(float &angle, GmVec3 &axis);
 };
 
 template <typename Value>

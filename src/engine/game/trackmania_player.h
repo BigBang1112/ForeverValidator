@@ -13,6 +13,8 @@ public:
     bool IsEventPrepared() const { return preparedEvent_; }
 
 private:
+    friend class CTrackManiaRace;
+
     GmIso4 previousSpawnIso_{};
     GmIso4 currentSpawnIso_{};
     bool preparedEvent_ = false;

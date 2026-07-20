@@ -78,6 +78,27 @@ bool AddCheckpointTriggerModel(
     return models.Add(std::move(model));
 }
 
+bool AddSubMobilModels(
+        const ReplaySceneBlockPlacement &placement,
+        StaticSceneModelCollection &models,
+        bool &complete) {
+    for (const ReplaySceneAssetPlacement &asset :
+         placement.SubMobilAssetPlacements()) {
+        const StaticSolidPrototype prototype = asset.Prototype();
+        if (!prototype.IsValid()) {
+            complete = false;
+            continue;
+        }
+        if (!models.Add(StaticSceneModel(
+                    prototype,
+                    placement.WorldIso(),
+                    StaticScenePurpose::PlacedBlock))) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool AddBlockPlacement(
         const ReplaySceneBlockPlacement &placement,
         StaticSceneModelCollection &models,
@@ -91,22 +112,58 @@ bool AddBlockPlacement(
 
     const std::optional<ReplaySceneAssetPlacement> mainAsset =
             placement.MainAssetPlacement();
-    if (!mainAsset.has_value()) {
-        return AddHelperModel(placement, models, complete);
+    const std::optional<ReplaySceneAssetPlacement> dedicatedCollisionAsset =
+            placement.DedicatedCollisionAssetPlacement();
+    if (mainAsset.has_value() || dedicatedCollisionAsset.has_value()) {
+        const bool isDedicatedCollision =
+                dedicatedCollisionAsset.has_value();
+        const ReplaySceneAssetPlacement &selectedAsset =
+                isDedicatedCollision ? *dedicatedCollisionAsset : *mainAsset;
+        const StaticSolidPrototype prototype = selectedAsset.Prototype();
+        if (!prototype.IsValid()) {
+            complete = false;
+        } else {
+            StaticSceneModel model(
+                    prototype,
+                    placement.WorldIso(),
+                    isDedicatedCollision
+                            ? StaticScenePurpose::DedicatedInitialCollision
+                            : StaticScenePurpose::PlacedBlock);
+            if (isDedicatedCollision) {
+                const std::optional<CHmsItem::Properties> properties =
+                        placement.DedicatedCollisionProperties();
+                if (!properties.has_value()) {
+                    complete = false;
+                } else {
+                    model.SetItemProperties(*properties);
+                }
+            }
+            if ((!isDedicatedCollision || model.ItemProperties().has_value()) &&
+                !models.Add(std::move(model))) {
+                return false;
+            }
+        }
     }
+    return AddCheckpointTriggerModel(placement, models, complete) &&
+           AddSubMobilModels(placement, models, complete) &&
+           AddHelperModel(placement, models, complete);
+}
 
-    const StaticSolidPrototype prototype = mainAsset->Prototype();
-    if (!prototype.IsValid()) {
+bool AddPylonPlacement(
+        const ReplayScenePylonPlacement &placement,
+        StaticSceneModelCollection &models,
+        bool &complete) {
+    const std::optional<ReplaySceneAssetPlacement> asset =
+            placement.AssetPlacement();
+    if (!asset.has_value() || !asset->Prototype().IsValid()) {
         complete = false;
         return true;
     }
-    if (!models.Add(StaticSceneModel(prototype,
-                                     placement.WorldIso(),
-                                     StaticScenePurpose::PlacedBlock))) {
-        return false;
-    }
-    return AddCheckpointTriggerModel(placement, models, complete) &&
-           AddHelperModel(placement, models, complete);
+    StaticSceneModel model(asset->Prototype(),
+                           placement.WorldIso(),
+                           StaticScenePurpose::Pylon);
+    model.SetItemProperties(placement.ItemProperties());
+    return models.Add(std::move(model));
 }
 
 }  // namespace
@@ -118,16 +175,27 @@ bool AppendBlockPlacementModels(
     const ReplaySceneModelCounts counts = placements.ModelCounts();
     if (!models.Reserve(models.Models().size() +
                         counts.placedBlocks +
+                        counts.blockSubMobils +
                         counts.clipAssemblies +
                         counts.helperAssemblies +
-                        counts.checkpointTriggers)) {
+                        counts.checkpointTriggers +
+                        counts.pylons +
+                        placements.DedicatedCollisionPlacements().size())) {
         return false;
     }
 
-    for (const ReplaySceneBlockPlacement &placement :
-         placements.Placements()) {
-        if (!AddBlockPlacement(placement, models, complete)) {
-            return false;
+    for (const ReplaySceneInstallation &installation :
+         placements.InstallationStream()) {
+        if (const ReplaySceneBlockPlacement *block =
+                    installation.BlockPlacement()) {
+            if (!AddBlockPlacement(*block, models, complete)) {
+                return false;
+            }
+        } else if (const ReplayScenePylonPlacement *pylon =
+                           installation.PylonPlacement()) {
+            if (!AddPylonPlacement(*pylon, models, complete)) {
+                return false;
+            }
         }
     }
     if (!complete) {

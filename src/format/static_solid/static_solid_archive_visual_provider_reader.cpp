@@ -195,13 +195,18 @@ int StaticSolidArchiveVisualReader::
         ParseVisual3dFaceStream(
                 CGameCtnReplayStaticSolidArchiveByteStream *byteStream,
                 StaticSolidArchiveVisualState *state,
-                StaticSolidArchiveLoadSession *store) {
+                StaticSolidArchiveLoadSession *store,
+                u32 classId) {
     if (byteStream == nullptr || state == nullptr || !state->HasActiveGeometry()) {
         return 0;
     }
     CGameCtnReplayStaticSolidVisualGeometryDefinition &geometry =
             state->ActiveGeometry();
-    const u32 stride = geometry.FaceRecordStride();
+    u32 stride = geometry.FaceRecordStride();
+    if (classId == TMNF_CLASS_CPlugVisualSprite) {
+        // CPlugVisualSprite serializes eight additional bytes per vertex.
+        stride += 8u;
+    }
     const u32 vertexCount = geometry.VertexCount();
     if (vertexCount > UINT32_MAX / stride) {
         return 0;

@@ -2,6 +2,27 @@
 #include "format/static_solid/static_solid_archive_byte_stream.h"
 #include "format/static_solid/static_solid_archive_hms_chunk_ids.h"
 #include "format/static_solid/static_solid_archive_node_graph.h"
+namespace {
+
+int ReadHmsItemArchiveState(
+        CGameCtnReplayStaticSolidArchiveByteStream *byteStream,
+        CGameCtnReplayStaticSolidArchiveNodeGraph *archiveNodeGraph,
+        u32 hmsNodeIndex) {
+    HmsItemArchiveWords state;
+    u32 visibility = 0u;
+    if (!byteStream->ReadU32(&state.physics) ||
+        !byteStream->ReadU32(&state.rendering) ||
+        !byteStream->ReadU16(&visibility)) {
+        return 0;
+    }
+    state.visibility = visibility;
+    return archiveNodeGraph == nullptr ||
+           archiveNodeGraph->RememberHmsItemState(
+                   ArchiveNodeReference::FromIndex(hmsNodeIndex), state);
+}
+
+}  // namespace
+
 int CHmsArchiveDiscardedRefsPayload::ReadSingle(
         CGameCtnReplayStaticSolidArchiveNodeRefReader *nodeRefs) {
     return nodeRefs != nullptr && nodeRefs->ReadNodPtr(nullptr);
@@ -177,7 +198,8 @@ int CGameCtnReplayStaticSolidArchiveHmsReader::ParseCHmsItemChunk(
         case ArchiveChunkIdValue(CHmsItemArchiveChunkId::PhysicsFlagsAndNat16E):
         case ArchiveChunkIdValue(CHmsItemArchiveChunkId::PhysicsFlagsAndNat16F):
         case ArchiveChunkIdValue(CHmsItemArchiveChunkId::PhysicsFlagsAndNat16G):
-            return byteStream->Skip(10u);
+            return ReadHmsItemArchiveState(
+                    byteStream, archiveNodeGraph, hmsNodeIndex);
         default:
             return 0;
     }

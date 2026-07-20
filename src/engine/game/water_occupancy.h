@@ -15,4 +15,7 @@ struct WaterOccupancyGrid {
     GmNat2 dimensions{};
     WaterOccupancy outside = WaterOccupancy::Dry;
     std::vector<WaterOccupancy> cells;
+    std::uint8_t outsidePlaneIndex = 0u;
+    std::vector<std::uint8_t> planeIndices;
+    std::vector<GmVec4> planes;
 };

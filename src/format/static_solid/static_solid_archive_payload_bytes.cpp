@@ -15,21 +15,19 @@ static int inflate_static_solid_part(const unsigned char *input,
                                      u32 inputByteCount,
                                      unsigned char *output,
                                      u32 outputByteCount) {
-    z_stream stream{};
-    stream.next_in = (Bytef *)input;
-    stream.avail_in = inputByteCount;
-    stream.next_out = output;
-    stream.avail_out = outputByteCount;
-    if (inflateInit(&stream) != Z_OK) {
+    if (input == nullptr || (output == nullptr && outputByteCount != 0u)) {
         return 0;
     }
-    const int status = inflate(&stream, Z_NO_FLUSH);
-    const int ok = stream.total_out == outputByteCount &&
-                   (status == Z_OK ||
-                    status == Z_STREAM_END ||
-                    stream.avail_out == 0u);
-    inflateEnd(&stream);
-    return ok;
+    unsigned char emptyOutput = 0u;
+    uLongf actualOutputByteCount = outputByteCount;
+    uLong actualInputByteCount = inputByteCount;
+    return uncompress2(
+                   outputByteCount != 0u ? output : &emptyOutput,
+                   &actualOutputByteCount,
+                   input,
+                   &actualInputByteCount) == Z_OK &&
+           actualOutputByteCount == static_cast<uLongf>(outputByteCount) &&
+           actualInputByteCount == static_cast<uLong>(inputByteCount);
 }
 
 int CGameCtnReplayStaticSolidRawPayloadDecoder::Decode(

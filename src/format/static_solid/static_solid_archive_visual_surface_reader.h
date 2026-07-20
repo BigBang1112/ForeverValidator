@@ -14,6 +14,16 @@ struct StaticSolidArchiveVisualState;
 struct StaticSolidArchiveLoadSession;
 struct CGameCtnReplayStaticSolidArchiveChunkDispatchContext;
 
+struct CPlugVisualGridArchivePayload {
+    u32 nbPointX = 0u;
+    u32 nbPointZ = 0u;
+    float rangeX = 0.0f;
+    float rangeZ = 0.0f;
+
+    int Chunk(CGameCtnReplayStaticSolidArchiveByteStream *byteStream,
+              u32 chunkId);
+};
+
 struct CGameCtnReplayStaticSolidArchiveVisualSurfaceReader {
   static int ParseVisualSurfaceChunk(
       const CGameCtnReplayStaticSolidArchiveChunkDispatchContext &context,

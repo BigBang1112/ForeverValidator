@@ -352,6 +352,8 @@ enum class CGameCtnReplayStaticSolidArchiveGraphTail : u32 {
     SurfaceGeometryDefinitions,
     VisualGeometryDefinitions,
     DecoratorTrees,
+    TreeIdNames,
+    SolidPhysicalDefinitions,
     Count
 };
 
@@ -425,10 +427,12 @@ public:
     void Clear();
 
     u32 Count() const;
+    u32 TreeIdNameCount() const;
     int Empty() const;
     const CGameCtnReplayStaticSolidArchiveNode *At(u32 index) const;
     int Add(const CGameCtnReplayStaticSolidArchiveNode &node);
     int ResizePrefix(u32 count);
+    int TruncateTreeIdNames(u32 count);
 
     template <typename Visitor>
     int ForEachNode(Visitor visitor) const {
@@ -784,6 +788,8 @@ public:
                                               surfaceGraph);
     }
     CGameCtnReplayStaticSolidArchiveGraphRollbackMark MarkRollback() const;
+    int CanRestoreRollback(
+            const CGameCtnReplayStaticSolidArchiveGraphRollbackMark &mark) const;
     int RestoreRollback(
             const CGameCtnReplayStaticSolidArchiveGraphRollbackMark &mark);
 

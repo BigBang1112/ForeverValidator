@@ -4,6 +4,7 @@
 
 #include "format/pack/block_info_catalog/replay_collection_zone_sources.h"
 #include "format/archive/archive_binary.h"
+#include "format/pack/installed/plug_file_pack.h"
 #include <new>
 static size_t blockinfo_external_refs_cstr_length(const char *text) {
     size_t length = 0u;
@@ -91,18 +92,23 @@ static int blockinfo_external_refs_contains_folder(const char *text,
 static CGameCtnReplayConstructionZoneKind
 blockinfo_external_refs_construction_zone_kind_from_path(
         const char *plainPath) {
-    if (plainPath == nullptr ||
-        plainPath[0] == 0 ||
-        !blockinfo_external_refs_contains_folder(plainPath,
-                                                 "ConstructionZone")) {
+    if (plainPath == nullptr || plainPath[0] == 0 ||
+        (!blockinfo_external_refs_contains_folder(plainPath,
+                                                  "ConstructionZone") &&
+         !blockinfo_external_refs_contains_folder(plainPath,
+                                                  "TrackManiaZone"))) {
         return CGameCtnReplayConstructionZoneKind::None;
     }
     if (blockinfo_external_refs_contains_folder(plainPath,
-                                                "ConstructionZoneFlat")) {
+                                                "ConstructionZoneFlat") ||
+        blockinfo_external_refs_contains_folder(plainPath,
+                                                "TrackManiaZoneFlat")) {
         return CGameCtnReplayConstructionZoneKind::Flat;
     }
     if (blockinfo_external_refs_contains_folder(plainPath,
-                                                "ConstructionZoneFrontier")) {
+                                                "ConstructionZoneFrontier") ||
+        blockinfo_external_refs_contains_folder(plainPath,
+                                                "TrackManiaZoneFrontier")) {
         return CGameCtnReplayConstructionZoneKind::Frontier;
     }
     return CGameCtnReplayConstructionZoneKind::Other;
@@ -192,6 +198,7 @@ int BlockInfoDescriptorExternalRefs::ParseGbx(
     }
     folders = SceneDescriptorFolderPaths{};
     installedPack = nullptr;
+    installedPathRoot[0] = '\0';
     references.clear();
     nodeCount = 0u;
     bodyOffset = 0u;
@@ -279,10 +286,45 @@ int BlockInfoDescriptorExternalRefs::ParseGbx(
 void BlockInfoDescriptorExternalRefs::AttachInstalledPack(
         const CPlugFilePack *pack) {
     installedPack = pack;
+    installedPathRoot[0] = '\0';
+    if (pack != nullptr) {
+        (void)blockinfo_external_refs_copy_cstr_to_fixed(
+                installedPathRoot,
+                sizeof(installedPathRoot),
+                pack->PackName().c_str());
+    }
+}
+
+int BlockInfoDescriptorExternalRefs::AttachInstalledPackRelativeTo(
+        const CPlugFilePack *pack,
+        const char *parentPlainPath) {
+    installedPack = nullptr;
+    installedPathRoot[0] = '\0';
+    if (pack == nullptr || parentPlainPath == nullptr) {
+        return 0;
+    }
+    size_t rootLength = 0u;
+    while (parentPlainPath[rootLength] != '\0' &&
+           parentPlainPath[rootLength] != '\\') {
+        ++rootLength;
+    }
+    if (rootLength == 0u || rootLength >= sizeof(installedPathRoot)) {
+        return 0;
+    }
+    for (size_t index = 0u; index < rootLength; ++index) {
+        installedPathRoot[index] = parentPlainPath[index];
+    }
+    installedPathRoot[rootLength] = '\0';
+    installedPack = pack;
+    return 1;
 }
 
 const CPlugFilePack *BlockInfoDescriptorExternalRefs::InstalledPack() const {
     return installedPack;
+}
+
+u32 BlockInfoDescriptorExternalRefs::ClassId() const {
+    return classId;
 }
 
 u32 BlockInfoDescriptorExternalRefs::BodyOffsetForFormatParser() const {
@@ -331,6 +373,9 @@ int BlockInfoDescriptorExternalRefs::PlainPathForReference(
     return folders.FindFolderForRef(ref->FolderIndexForFormatLookup(), &folder) &&
            SceneDescriptorFolderPaths::BuildPackRefFullPath(folder,
                                                             ref->FileName(),
+                                                            installedPathRoot[0] != '\0'
+                                                                    ? installedPathRoot
+                                                                    : "Stadium",
                                                             out,
                                                             outSize);
 }
@@ -352,6 +397,9 @@ int BlockInfoDescriptorExternalRefs::OptionalPlainPathForReference(
     }
     return SceneDescriptorFolderPaths::BuildPackRefFullPath(folder,
                                                             ref->FileName(),
+                                                            installedPathRoot[0] != '\0'
+                                                                    ? installedPathRoot
+                                                                    : "Stadium",
                                                             out,
                                                             outSize);
 }
@@ -400,7 +448,8 @@ int BlockInfoDescriptorExternalRefs::ResolveBlockInfoSourceRef(
     if (!PlainPathForReference(ref, plainPath, sizeof(plainPath))) {
         return 0;
     }
-    if (!blockinfo_external_refs_contains(plainPath, "ConstructionBlockInfo")) {
+    if (!blockinfo_external_refs_contains(plainPath, "ConstructionBlockInfo") &&
+        !blockinfo_external_refs_contains(plainPath, "TrackManiaElementDesc")) {
         return 1;
     }
     return blockinfo_external_refs_copy_cstr_to_fixed(out,

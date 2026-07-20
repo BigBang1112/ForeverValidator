@@ -1,7 +1,9 @@
 #include "format/static_solid/static_solid_descriptor_dependency_queue.h"
 #include <stddef.h>
 
+#include "engine/resources/catalog_asset_repository.h"
 #include "engine/game/replay_challenge_map_input.h"
+#include "format/archive/archive_class_ids.h"
 #include "format/static_solid/static_scene_archive_loader.h"
 #include "engine/scene/replay_scene_placements.h"
 #include "engine/game/game_ctn_block.h"
@@ -22,33 +24,48 @@ size_t StaticDescriptorDependencyBoundedLength(const char *text,
     return length;
 }
 
-int RequireDecorationDescriptor(
-        const CGameCtnReplayMapInput &mapInput,
+int RequireTypedDecorationDescriptor(
+        const std::string &selectedPath,
+        u32 expectedClassId,
         const StaticSolidArchiveCatalog &catalog,
         CGameCtnReplayStaticSolidDescriptorDependencyQueue &queue) {
-    const auto &mood = mapInput.DecorationMood();
-    const auto &collection = mapInput.DecorationCollection();
-    const auto &author = mapInput.DecorationAuthor();
-    if (!mood.HasName() || !collection.NameEquals("Stadium") ||
-        !author.NameEquals("Nadeo") || mood.Name().size() >= 64u) {
-        return 1;
-    }
-    std::optional<std::string> path;
-    try {
-        std::string descriptor =
-                "Stadium\\ConstructionDecoration\\StadiumBase" +
-                std::to_string(mapInput.Size().x) + "x" +
-                std::to_string(mapInput.Size().z) + mood.Name() +
-                ".TMDecoration.Gbx";
-        if (descriptor.size() <
-            CGameCtnReplayStaticSolidDescriptorPathCapacity) {
-            path = std::move(descriptor);
-        }
-    } catch (const std::bad_alloc &) {
+    if (selectedPath.empty()) {
         return 0;
     }
-    return !path || catalog.Find(path->c_str()) == nullptr ||
-           queue.RequireDescriptor(path->c_str());
+    const StaticSolidArchiveCatalogEntry *entry =
+            catalog.Find(selectedPath.c_str());
+    if (entry == nullptr || entry->descriptorClassId != expectedClassId) {
+        return 0;
+    }
+    return queue.RequireDescriptor(selectedPath.c_str());
+}
+
+int RequireDecorationDescriptors(
+        const CatalogDecorationSizeDefinition &decoration,
+        const StaticSolidArchiveCatalog &catalog,
+        CGameCtnReplayStaticSolidDescriptorDependencyQueue &queue) {
+    if ((decoration.decorationSizeEmbedded &&
+         !decoration.selectedDecorationSizePath.empty()) ||
+        (!decoration.decorationSizeEmbedded &&
+         decoration.selectedDecorationSizePath.empty())) {
+        return 0;
+    }
+    return RequireTypedDecorationDescriptor(
+                   decoration.selectedDecorationPath,
+                   TMNF_CLASS_CGameCtnDecoration,
+                   catalog,
+                   queue) &&
+           (decoration.decorationSizeEmbedded ||
+            RequireTypedDecorationDescriptor(
+                    decoration.selectedDecorationSizePath,
+                    TMNF_CLASS_CGameCtnDecorationSize,
+                    catalog,
+                    queue)) &&
+           RequireTypedDecorationDescriptor(
+                   decoration.selectedBaseScenePath,
+                   TMNF_CLASS_CScene3d,
+                   catalog,
+                   queue);
 }
 
 const char *DescriptorPath(
@@ -74,7 +91,7 @@ int AddBlockPlacementDependencies(
         const StaticSolidArchiveReferenceCatalog &references,
         CGameCtnReplayStaticSolidDescriptorDependencyQueue &queue) {
     for (const ReplaySceneBlockPlacement &placement :
-         placements.Placements()) {
+         placements.CollisionPlacements()) {
         const CGameCtnBlock &block = placement.Block();
         if (!queue.RequireDescriptor(
                     DescriptorPath(block.MainMobil(), references))) {
@@ -98,6 +115,13 @@ int AddBlockPlacementDependencies(
                         DescriptorPath(clipSource.Get(), references))) {
                 return 0;
             }
+        }
+    }
+    for (const ReplayScenePylonPlacement &placement :
+         placements.PylonPlacements()) {
+        if (!queue.RequireDescriptor(
+                    DescriptorPath(&placement.Mobil(), references))) {
+            return 0;
         }
     }
     return 1;
@@ -211,15 +235,33 @@ SeedFromReplayStaticInputs(
         const ReplaySceneBlockPlacements *placements,
         const CGameCtnReplayArchiveStaticModelCollection *archiveModels,
         const StaticSolidArchiveCatalog *inventory,
+        const StaticSolidArchiveReferenceCatalog *references,
+        const CatalogDecorationSizeDefinition *decorationSize) {
+    return mapInput != nullptr &&
+           SeedFromReplayMapStaticInputs(
+                   placements, archiveModels, references) &&
+           SeedFromReplayDecorationStaticInputs(
+                   inventory, decorationSize);
+}
+
+int CGameCtnReplayStaticSolidDescriptorDependencyQueue::
+SeedFromReplayMapStaticInputs(
+        const ReplaySceneBlockPlacements *placements,
+        const CGameCtnReplayArchiveStaticModelCollection *archiveModels,
         const StaticSolidArchiveReferenceCatalog *references) {
-    return placements != nullptr &&
-           references != nullptr &&
+    return placements != nullptr && references != nullptr &&
            AddBlockPlacementDependencies(*placements, *references, *this) &&
            archiveModels != nullptr &&
-           archiveModels->ContributeStaticSolidDescriptorDependencies(*this) &&
-           inventory != nullptr &&
-           mapInput != nullptr &&
-           RequireDecorationDescriptor(*mapInput, *inventory, *this) &&
+           archiveModels->ContributeStaticSolidDescriptorDependencies(*this);
+}
+
+int CGameCtnReplayStaticSolidDescriptorDependencyQueue::
+SeedFromReplayDecorationStaticInputs(
+        const StaticSolidArchiveCatalog *inventory,
+        const CatalogDecorationSizeDefinition *decorationSize) {
+    return inventory != nullptr && decorationSize != nullptr &&
+           RequireDecorationDescriptors(
+                   *decorationSize, *inventory, *this) &&
            inventory->RequestDecoratorSolidDependencies(*this);
 }
 

@@ -5,7 +5,9 @@
 #include <cstdint>
 #include <optional>
 
+#include "engine/game/game_ctn_types.h"
 #include "simulation/control/replay_control_timeline.h"
+#include "validation/evaluation/replay_validation_mode.h"
 #include "validation/evaluation/replay_validation_result.h"
 
 struct ReplayValidationConfiguration {
@@ -23,6 +25,7 @@ struct ReplayValidationConfiguration {
 };
 
 struct ReplayValidationPlan {
+    ReplayValidationMode validationMode = ReplayValidationMode::Race;
     std::size_t sampleCount = 0u;
     std::uint32_t samplePeriodMs = 0u;
     std::uint32_t requestedSamples = 0u;
@@ -38,6 +41,9 @@ struct ReplayValidationPlan {
     std::optional<std::int32_t> expectedRaceTimeMs;
     std::optional<std::int32_t> expectedStuntsScore;
     std::optional<std::int32_t> expectedRespawns;
+    EChallengePlayMode playMode = EChallengePlayMode::Race;
+    bool isLapRace = false;
+    std::uint32_t lapCount = 1u;
 };
 
 struct ReplayValidationMetadata {

@@ -18,7 +18,14 @@ int CatalogCollectionArchive::Load(
     }
     if (!installedPack->ExtractPath(collectionPath, &bytes) ||
         bytes.Empty() || bytes.Size() > UINT32_MAX) {
-        return 0;
+        if (snprintf(collectionPath,
+                     sizeof(collectionPath),
+                     "Collections\\%s.TMElementColl.Gbx",
+                     collectionName) >= (int)sizeof(collectionPath) ||
+            !installedPack->ExtractPath(collectionPath, &bytes) ||
+            bytes.Empty() || bytes.Size() > UINT32_MAX) {
+            return 0;
+        }
     }
     return refs.ParseGbx(bytes.Data(), static_cast<u32>(bytes.Size()));
 }

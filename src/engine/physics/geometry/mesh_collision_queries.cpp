@@ -15,17 +15,21 @@ struct SSphereMeshCollide {
     GmVec3 triangleNormal;
     GmLocalMaterialIndex triangleMaterial;
 
-    int EmitFeatureCollision(GmVec3 featurePointLocal, float minDistanceSq);
+    int EmitFeatureCollision(GmVec3 featurePointLocal,
+                             float minDistanceSq,
+                             bool requireRadiusContainment);
     int EmitEndpointBCollision(GmVec3 featurePointLocal, float minDistance);
     int CollideTriangle(const GmVec3 vertices[3]);
 };
 
 int SSphereMeshCollide::EmitFeatureCollision(GmVec3 featurePointLocal,
-                                             float minDistanceSq) {
+                                             float minDistanceSq,
+                                             bool requireRadiusContainment) {
     const GmVec3 featureToCenter =
         sphereCenterMesh.SubtractForCollision(featurePointLocal);
     const float distanceSq = (featureToCenter.Dot(featureToCenter));
-    if (radius * radius < distanceSq || !(minDistanceSq < distanceSq)) {
+    if ((requireRadiusContainment && radius * radius < distanceSq) ||
+        !(minDistanceSq < distanceSq)) {
         return 0;
     }
 
@@ -131,7 +135,8 @@ int SSphereMeshCollide::CollideTriangle(const GmVec3 vertices[3]) {
             if (alongFromStart < 0.0f) {
                 return EmitFeatureCollision(
                         edgeStart,
-                        PhysicsTolerance::SurfaceDirectionLengthSquared);
+                        PhysicsTolerance::SurfaceDirectionLengthSquared,
+                        true);
             }
 
             const float alongFromEnd =
@@ -140,7 +145,8 @@ int SSphereMeshCollide::CollideTriangle(const GmVec3 vertices[3]) {
                 const GmVec3 featurePoint =
                     projectedPoint.AddForCollision(edgeNormal.ScaleForCollision(-edgeDistance));
                 return EmitFeatureCollision(featurePoint,
-                                            PhysicsTolerance::CollisionDistance);
+                                            PhysicsTolerance::CollisionDistance,
+                                            false);
             }
 
             return EmitEndpointBCollision(
