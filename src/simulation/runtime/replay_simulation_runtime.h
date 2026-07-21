@@ -44,6 +44,9 @@ public:
             const ReplayControlTick &tick);
     std::optional<std::uint32_t> FinishTimeMs() const;
     std::optional<std::uint32_t> StuntsScore() const;
+    ReplayDynaFrameState CurrentFrame() const;
+    ReplayVehicleControlState CurrentControls() const;
+    const ReplayRaceProgress &RaceProgress() const;
     std::optional<std::uint32_t> ApplyReplayStuntTimePenalty(
             std::uint32_t overtimeMs);
 

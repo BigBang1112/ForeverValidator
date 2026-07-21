@@ -14,6 +14,10 @@
 
 namespace forevervalidator {
 
+namespace detail {
+struct PhysicsSandboxAssetSourceAccess;
+}
+
 struct ByteView {
     const std::byte *data = nullptr;
     std::size_t size = 0u;
@@ -24,10 +28,17 @@ using AssetBytes = std::vector<std::byte>;
 
 struct ReplayIdentity { std::string name; };
 
+enum class SimulationBackend : std::uint8_t {
+    Reference,
+    OptimizedCpu,
+    Batched,
+};
+
 struct ValidationOptions {
     std::uint32_t requestedSamples = 0xffffffffu;
     std::uint32_t controlTickMs = 10u;
     std::uint32_t validationPrestartMs = 2600u;
+    SimulationBackend backend = SimulationBackend::Reference;
 };
 
 enum class ValidationStage : std::uint16_t {
@@ -277,6 +288,18 @@ struct ValidationReport {
     InputGhostMatch inputGhostMatch = InputGhostMatch::Unavailable;
 };
 
+struct ReplayValidationRequest {
+    ByteView replayBytes;
+    ReplayIdentity identity;
+};
+
+using ReplayValidationAttempt =
+        DiscriminatedResult<ValidationReport, ValidationError>;
+
+struct ReplayBatchReport {
+    std::vector<ReplayValidationAttempt> attempts;
+};
+
 class ValidationContext;
 
 class AssetSource {
@@ -293,6 +316,7 @@ private:
     friend Result<AssetSource> CreateAssetSource(AssetProvider provider) noexcept;
     friend Result<ValidationContext> CreateValidationContext(
             AssetSource source) noexcept;
+    friend struct detail::PhysicsSandboxAssetSourceAccess;
 };
 
 Result<AssetSource> CreateAssetSource(AssetProvider provider) noexcept;
@@ -314,12 +338,20 @@ private:
             ValidationContext &context, ByteView replayBytes,
             const ReplayIdentity &identity,
             const ValidationOptions &options) noexcept;
+    friend Result<ReplayBatchReport> ValidateReplayBatch(
+            ValidationContext &context,
+            const std::vector<ReplayValidationRequest> &requests,
+            const ValidationOptions &options) noexcept;
 };
 
 Result<ValidationContext> CreateValidationContext(AssetSource source) noexcept;
 Result<ValidationReport> ValidateReplay(
         ValidationContext &context, ByteView replayBytes,
         const ReplayIdentity &identity,
+        const ValidationOptions &options = {}) noexcept;
+Result<ReplayBatchReport> ValidateReplayBatch(
+        ValidationContext &context,
+        const std::vector<ReplayValidationRequest> &requests,
         const ValidationOptions &options = {}) noexcept;
 
 const char *ValidationErrorCategoryName(ValidationErrorCategory category) noexcept;

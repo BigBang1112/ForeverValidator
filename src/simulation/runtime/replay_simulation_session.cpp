@@ -46,9 +46,11 @@ struct ReplaySimulationSession::Impl {
     CTrackManiaRace race;
     ReplayMapScene mapScene;
     std::unique_ptr<ReplaySimulationRuntime> runtime;
+    std::uint32_t incrementalRespawnCount = 0u;
 
     void ResetRuntime() {
         runtime.reset();
+        incrementalRespawnCount = 0u;
     }
 };
 
@@ -151,6 +153,74 @@ ReplaySimulationTimelineResult ReplaySimulationSession::SimulateTimeline(
     result.stuntsScore = impl->runtime->StuntsScore();
     result.raceCompleted = result.finishTimeMs.has_value();
     result.result = ReplaySimulationRunResult::Success;
+    return result;
+}
+
+ReplaySimulationRunResult ReplaySimulationSession::StartIncremental(
+        const ReplaySimulationDefinition &simulationDefinition,
+        const ReplayControlTick &firstTick,
+        std::uint32_t validationSeed) {
+    if (!tmnf::simulation::DeterministicExecutionScope::IsActive()) {
+        return ReplaySimulationRunResult::DeterministicExecutionUnavailable;
+    }
+    impl->ResetRuntime();
+    const ReplayMapSceneResult readyResult =
+            impl->mapScene.EnsureReady(impl->race);
+    if (readyResult != ReplayMapSceneResult::Ready) {
+        return MapReplaySceneResult(readyResult);
+    }
+    GmIso4 startLocation;
+    if (!impl->mapScene.FirstStartLineSpawnLocation(startLocation)) {
+        return ReplaySimulationRunResult::MapStartUnavailable;
+    }
+    impl->runtime = std::make_unique<ReplaySimulationRuntime>(impl->race);
+    return impl->runtime->Start(
+            simulationDefinition,
+            impl->mapScene,
+            startLocation,
+            firstTick,
+            validationSeed);
+}
+
+ReplaySimulationTimelineResult ReplaySimulationSession::AdvanceIncremental(
+        const std::vector<ReplayControlTick> &controlTicks,
+        std::size_t begin,
+        std::size_t count) {
+    ReplaySimulationTimelineResult result;
+    if (!impl->runtime || begin > controlTicks.size() ||
+        count > controlTicks.size() - begin) {
+        return result;
+    }
+    for (std::size_t index = begin; index < begin + count; ++index) {
+        const ReplayControlTick &tick = controlTicks[index];
+        const ReplaySimulationStepExecution execution =
+                impl->runtime->Step(tick);
+        if (execution.result != ReplaySimulationRunResult::Success) {
+            result.result = execution.result;
+            return result;
+        }
+        impl->incrementalRespawnCount += execution.respawnExecutedCount;
+    }
+    result.finishTimeMs = impl->runtime->FinishTimeMs();
+    result.stuntsScore = impl->runtime->StuntsScore();
+    result.raceCompleted = result.finishTimeMs.has_value();
+    result.executedRespawnCount = impl->incrementalRespawnCount;
+    result.result = ReplaySimulationRunResult::Success;
+    return result;
+}
+
+std::optional<ReplaySimulationStateView>
+ReplaySimulationSession::CurrentState() const {
+    if (!impl->runtime) {
+        return std::nullopt;
+    }
+    ReplaySimulationStateView result;
+    result.frame = impl->runtime->CurrentFrame();
+    result.controls = impl->runtime->CurrentControls();
+    result.race = impl->runtime->RaceProgress();
+    result.finishTimeMs = impl->runtime->FinishTimeMs();
+    result.stuntsScore = impl->runtime->StuntsScore();
+    result.respawnCount = impl->incrementalRespawnCount;
     return result;
 }
 

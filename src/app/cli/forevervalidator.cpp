@@ -1,5 +1,4 @@
 #include <algorithm>
-#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -8,11 +7,6 @@
 #include <string>
 #include <utility>
 #include <vector>
-
-#ifndef _WIN32
-#include <sys/wait.h>
-#include <unistd.h>
-#endif
 
 #include <forevervalidator/json.h>
 #include <forevervalidator/native.h>
@@ -27,6 +21,7 @@ using forevervalidator::ReplayIdentity;
 using forevervalidator::Result;
 using forevervalidator::ValidationContext;
 using forevervalidator::ValidationError;
+using forevervalidator::ValidationOptions;
 
 struct ValidationOutput {
     int exitCode;
@@ -116,8 +111,9 @@ fs::path BatchOutputPath(
 void PrintUsage(const char *program) {
     std::fprintf(stderr,
                  "usage:\n"
-                 "  %s --pak-dir DIR REPLAY [--out PATH]\n"
-                 "  %s --pak-dir DIR --out-dir DIR REPLAY_OR_DIRECTORY [REPLAY_OR_DIRECTORY ...]\n",
+                 "  %s --pak-dir DIR [--backend BACKEND] REPLAY [--out PATH]\n"
+                 "  %s --pak-dir DIR [--backend BACKEND] --out-dir DIR REPLAY_OR_DIRECTORY [REPLAY_OR_DIRECTORY ...]\n"
+                 "  BACKEND: reference, optimized-cpu, batched\n",
                  program,
                  program);
 }
@@ -171,7 +167,8 @@ void ReportReplayClassification(const ValidationAttempt &attempt) {
 ValidationAttempt ValidateLoadedReplay(
         ValidationContext &context,
         const NativeFileResult &file,
-        const ReplayIdentity &identity) {
+        const ReplayIdentity &identity,
+        const ValidationOptions &options = {}) {
     if (!file) {
         return ValidationAttempt::Failure(file.Error());
     }
@@ -180,7 +177,8 @@ ValidationAttempt ValidateLoadedReplay(
             forevervalidator::ValidateReplay(
                     context,
                     ByteView{file.Value().data(), file.Value().size()},
-                    identity);
+                    identity,
+                    options);
     if (!validation) {
         return ValidationAttempt::Failure(std::move(validation).Error());
     }
@@ -200,11 +198,12 @@ ValidationAttempt ValidateLoadedReplay(
 
 ValidationAttempt ValidateReplayPath(
         ValidationContext &context,
-        const fs::path &replayPath) {
+        const fs::path &replayPath,
+        const ValidationOptions &options = {}) {
     const ReplayIdentity identity{replayPath.string()};
     NativeFileResult file = forevervalidator::ReadNativeReplayFile(
             identity.name, identity);
-    return ValidateLoadedReplay(context, file, identity);
+    return ValidateLoadedReplay(context, file, identity, options);
 }
 
 const char *ValidationResultName(int result) {
@@ -217,75 +216,36 @@ const char *ValidationResultName(int result) {
     return "error";
 }
 
-int ValidateReplayInChild(
-        ValidationContext &context,
-        const fs::path &replayPath,
-        const fs::path &outputPath) {
-    const std::string replayText = replayPath.string();
-    const std::string outputText = outputPath.string();
-#ifdef _WIN32
-    const ReplayIdentity identity{replayText};
-    NativeFileResult file = forevervalidator::ReadNativeReplayFile(
-            replayText, identity);
-    ValidationAttempt attempt = ValidateLoadedReplay(context, file, identity);
-    ReportReplayClassification(attempt);
-    if (!attempt) {
-        ReportValidationError(attempt.Error());
+std::optional<forevervalidator::SimulationBackend> ParseBackend(
+        const char *value) {
+    if (std::strcmp(value, "reference") == 0) {
+        return forevervalidator::SimulationBackend::Reference;
     }
-    int exitCode = AttemptExitCode(attempt);
-    if (exitCode <= 1 &&
-        !WriteTextFile(outputPath, AttemptJson(attempt))) {
-        std::fprintf(stderr, "could not write output %s\n",
-                     outputText.c_str());
-        exitCode = 67;
+    if (std::strcmp(value, "optimized-cpu") == 0) {
+        return forevervalidator::SimulationBackend::OptimizedCpu;
     }
-    return exitCode;
-#else
-    std::fflush(nullptr);
-    const pid_t pid = fork();
-    if (pid < 0) {
-        std::fprintf(stderr,
-                     "could not fork ForeverValidator for %s: %s\n",
-                     replayText.c_str(),
-                     std::strerror(errno));
-        return 70;
+    if (std::strcmp(value, "batched") == 0) {
+        return forevervalidator::SimulationBackend::Batched;
     }
-    if (pid == 0) {
-        ValidationAttempt attempt = ValidateReplayPath(context, replayPath);
-        ReportReplayClassification(attempt);
-        if (!attempt) {
-            ReportValidationError(attempt.Error());
-        }
-        int exitCode = AttemptExitCode(attempt);
-        if (exitCode <= 1 &&
-            !WriteTextFile(outputPath, AttemptJson(attempt))) {
-            std::fprintf(stderr, "could not write output %s\n",
-                         outputText.c_str());
-            exitCode = 67;
-        }
-        std::fflush(nullptr);
-        _exit(exitCode & 0xff);
-    }
+    return std::nullopt;
+}
 
-    int status = 0;
-    while (waitpid(pid, &status, 0) < 0) {
-        if (errno == EINTR) {
-            continue;
-        }
-        std::fprintf(stderr,
-                     "could not wait for ForeverValidator child for %s: %s\n",
-                     replayText.c_str(),
-                     std::strerror(errno));
-        return 70;
+ValidationAttempt SerializeValidationAttempt(
+        forevervalidator::ReplayValidationAttempt attempt) {
+    if (!attempt) {
+        return ValidationAttempt::Failure(std::move(attempt).Error());
     }
-    if (WIFEXITED(status)) {
-        return WEXITSTATUS(status);
+    forevervalidator::ValidationReport report = std::move(attempt).Value();
+    Result<std::string> serialization =
+            forevervalidator::SerializeValidationReport(report);
+    if (!serialization) {
+        return ValidationAttempt::Failure(std::move(serialization).Error());
     }
-    if (WIFSIGNALED(status)) {
-        return 128 + WTERMSIG(status);
-    }
-    return 70;
-#endif
+    return ValidationAttempt::Success(ValidationOutput{
+            report.valid ? 0 : 1,
+            std::move(serialization).Value(),
+            report.metadata.replayProvenance,
+            report.inputGhostMatch});
 }
 
 }  // namespace
@@ -296,6 +256,7 @@ int main(int argc, char **argv) {
     std::optional<fs::path> packDirectory;
     std::vector<fs::path> replays;
     bool repeatSameProcess = false;
+    std::optional<forevervalidator::SimulationBackend> selectedBackend;
 
     for (int index = 1; index < argc; ++index) {
         if (std::strcmp(argv[index], "--out") == 0 && index + 1 < argc) {
@@ -308,6 +269,13 @@ int main(int argc, char **argv) {
             packDirectory.emplace(argv[++index]);
         } else if (std::strcmp(argv[index], "--repeat-same-process") == 0) {
             repeatSameProcess = true;
+        } else if (std::strcmp(argv[index], "--backend") == 0 &&
+                   index + 1 < argc) {
+            selectedBackend = ParseBackend(argv[++index]);
+            if (!selectedBackend.has_value()) {
+                PrintUsage(argv[0]);
+                return 64;
+            }
         } else if (argv[index][0] == '-') {
             PrintUsage(argv[0]);
             return 64;
@@ -356,9 +324,14 @@ int main(int argc, char **argv) {
                 contextResult.Error());
     }
     ValidationContext context = std::move(contextResult).Value();
+    ValidationOptions validationOptions;
+    validationOptions.backend = selectedBackend.value_or(
+            singleRun ? forevervalidator::SimulationBackend::Reference
+                      : forevervalidator::SimulationBackend::Batched);
 
     if (singleRun) {
-        ValidationAttempt attempt = ValidateReplayPath(context, replays.front());
+        ValidationAttempt attempt = ValidateReplayPath(
+                context, replays.front(), validationOptions);
         ReportReplayClassification(attempt);
         if (!attempt) {
             ReportValidationError(attempt.Error());
@@ -379,6 +352,42 @@ int main(int argc, char **argv) {
         return exitCode;
     }
 
+    std::vector<AssetBytes> loadedReplays;
+    std::vector<forevervalidator::ReplayValidationRequest> requests;
+    loadedReplays.reserve(replays.size());
+    requests.reserve(repeatSameProcess ? replays.size() * 2u : replays.size());
+    for (const fs::path &replay : replays) {
+        const ReplayIdentity identity{replay.string()};
+        NativeFileResult file = forevervalidator::ReadNativeReplayFile(
+                identity.name, identity);
+        if (!file) {
+            ReportValidationError(file.Error());
+            return forevervalidator::ValidationErrorExitCode(file.Error());
+        }
+        loadedReplays.push_back(std::move(file).Value());
+    }
+    for (std::size_t index = 0u; index < replays.size(); ++index) {
+        requests.push_back({
+                ByteView{loadedReplays[index].data(), loadedReplays[index].size()},
+                ReplayIdentity{replays[index].string()}});
+        if (repeatSameProcess) {
+            requests.push_back(requests.back());
+        }
+    }
+    Result<forevervalidator::ReplayBatchReport> batch =
+            forevervalidator::ValidateReplayBatch(
+                    context, requests, validationOptions);
+    if (!batch) {
+        ReportValidationError(batch.Error());
+        return forevervalidator::ValidationErrorExitCode(batch.Error());
+    }
+
+    std::vector<ValidationAttempt> attempts;
+    attempts.reserve(batch.Value().attempts.size());
+    for (auto &attempt : batch.Value().attempts) {
+        attempts.push_back(SerializeValidationAttempt(std::move(attempt)));
+    }
+
     unsigned valid = 0u;
     unsigned invalid = 0u;
     unsigned errors = 0u;
@@ -388,33 +397,25 @@ int main(int argc, char **argv) {
         const std::string replayText = replays[index].string();
         std::fprintf(stderr, "validate: %s\n", replayText.c_str());
 
-        int result = 0;
+        const std::size_t attemptIndex = repeatSameProcess ? index * 2u : index;
+        ValidationAttempt &attempt = attempts[attemptIndex];
+        ReportReplayClassification(attempt);
+        if (!attempt) {
+            ReportValidationError(attempt.Error());
+        }
+        int result = AttemptExitCode(attempt);
         if (repeatSameProcess) {
-            const ReplayIdentity identity{replayText};
-            NativeFileResult file = forevervalidator::ReadNativeReplayFile(
-                    replayText, identity);
-            ValidationAttempt first = ValidateLoadedReplay(context, file, identity);
-            ValidationAttempt second = ValidateLoadedReplay(context, file, identity);
-            ReportReplayClassification(first);
-            if (!first) {
-                ReportValidationError(first.Error());
-            }
-            if (!second) {
-                ReportValidationError(second.Error());
-            }
-            result = AttemptExitCode(first);
+            ValidationAttempt &second = attempts[attemptIndex + 1u];
             if (result != AttemptExitCode(second) ||
-                AttemptJson(first) != AttemptJson(second)) {
+                AttemptJson(attempt) != AttemptJson(second)) {
                 std::fprintf(stderr,
                              "same-process replay result mismatch for %s\n",
                              replayText.c_str());
                 result = 71;
-            } else if (result <= 1 &&
-                       !WriteTextFile(output, AttemptJson(first))) {
-                result = 67;
             }
-        } else {
-            result = ValidateReplayInChild(context, replays[index], output);
+        }
+        if (result <= 1 && !WriteTextFile(output, AttemptJson(attempt))) {
+            result = 67;
         }
 
         std::fprintf(stderr, "result: %s -> %s",

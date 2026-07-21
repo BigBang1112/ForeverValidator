@@ -178,6 +178,20 @@ std::optional<std::uint32_t> ReplaySimulationRuntime::StuntsScore() const {
     return state_->race.StuntsScore();
 }
 
+ReplayDynaFrameState ReplaySimulationRuntime::CurrentFrame() const {
+    return state_->body.CaptureCurrentFrame();
+}
+
+ReplayVehicleControlState ReplaySimulationRuntime::CurrentControls() const {
+    const CSceneVehicleCar::SControlInput input =
+            state_->vehicle.Car().ControlInput();
+    return {input.lowSpeedGateA, input.lowSpeedGateB, input.steering};
+}
+
+const ReplayRaceProgress &ReplaySimulationRuntime::RaceProgress() const {
+    return state_->race.Progress();
+}
+
 std::optional<std::uint32_t>
 ReplaySimulationRuntime::ApplyReplayStuntTimePenalty(
         std::uint32_t overtimeMs) {

@@ -12,7 +12,9 @@
 #include "simulation/runtime/replay_simulation_definition.h"
 #include "simulation/runtime/replay_simulation_result.h"
 #include "simulation/runtime/replay_trajectory_observation.h"
+#include "simulation/runtime/replay_dyna_frame_state.h"
 #include "engine/scene/static_scene_model.h"
+#include "engine/game/trackmania_race.h"
 struct ReplaySimulationTimelineResult {
     ReplaySimulationRunResult result =
             ReplaySimulationRunResult::InvalidControlTimeline;
@@ -21,6 +23,15 @@ struct ReplaySimulationTimelineResult {
     std::optional<std::uint32_t> finishTimeMs;
     std::optional<std::uint32_t> stuntsScore;
     std::uint32_t executedRespawnCount = 0u;
+};
+
+struct ReplaySimulationStateView {
+    ReplayDynaFrameState frame{};
+    ReplayVehicleControlState controls{};
+    ReplayRaceProgress race{};
+    std::optional<std::uint32_t> finishTimeMs;
+    std::optional<std::uint32_t> stuntsScore;
+    std::uint32_t respawnCount = 0u;
 };
 
 class ReplaySimulationSession {
@@ -43,6 +54,15 @@ public:
             const ReplaySimulationDefinition &simulationDefinition,
             const std::vector<ReplayControlTick> &controlTicks,
             std::uint32_t validationSeed);
+    ReplaySimulationRunResult StartIncremental(
+            const ReplaySimulationDefinition &simulationDefinition,
+            const ReplayControlTick &firstTick,
+            std::uint32_t validationSeed);
+    ReplaySimulationTimelineResult AdvanceIncremental(
+            const std::vector<ReplayControlTick> &controlTicks,
+            std::size_t begin,
+            std::size_t count);
+    std::optional<ReplaySimulationStateView> CurrentState() const;
     std::optional<std::uint32_t> ApplyReplayStuntTimePenalty(
             std::uint32_t overtimeMs);
 

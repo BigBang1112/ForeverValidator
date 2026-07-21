@@ -117,6 +117,11 @@ build/native/forevervalidator \
   "/path/to/replays"
 ```
 
+Select a simulation backend at runtime with `--backend reference`,
+`--backend optimized-cpu`, or `--backend batched`. Single-replay validation
+defaults to the authoritative reference backend. Multi-replay runs default to
+the ordered batched backend.
+
 A single replay returns exit status 0 for valid, 1 for invalid, and a distinct
 nonzero error code when replay decoding, asset loading, or simulation cannot
 be completed. JSON includes typed map environment, vehicle, play mode,
@@ -163,6 +168,27 @@ Applications can instead provide assets from memory with `AssetProvider` and
 `CreateAssetSource`. A validation context lazily caches pack and vehicle data,
 so it can be reused for replays from different United environments. Every
 public operation returns a typed `Result<T>`.
+
+`ValidationOptions::backend` selects the backend for one library call. The
+optimized CPU backend currently forwards to the reference implementation while
+remaining behind an independent implementation boundary. `ValidateReplayBatch`
+executes an ordered list of independent replay requests and preserves an
+individual report or error for every item.
+
+## Experimental physics sandbox
+
+`<forevervalidator/experimental/physics_sandbox.h>` provides the deliberately
+unstable `PhysicsSandbox` integration surface for simulation and backend
+development. A sandbox consumes its own `AssetSource`, loads the embedded map
+and input timeline from a replay, advances by an exact tick count, and captures
+or restores opaque deterministic states. Static map collision structures are
+owned by the sandbox rather than copied into state snapshots.
+
+The API exposes replay-level input events and search-relevant state such as car
+dynamics, race-relative time, checkpoints, laps, respawns, and completion. It
+does not expose arbitrary engine objects, per-tick callbacks, or TAS search
+concepts. Snapshot restoration currently rebuilds the mutable simulation by
+deterministically replaying the captured input prefix.
 
 ```text
 libforevervalidator_core.a    portable validation backend

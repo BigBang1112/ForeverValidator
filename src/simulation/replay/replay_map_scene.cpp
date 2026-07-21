@@ -146,6 +146,11 @@ ReplayMapSceneResult ReplayMapScene::SelectCollisionZone(
             return installResult;
         }
         stationaryCorpusesInstalled_ = true;
+    } else {
+        race.ResetValidationSession();
+        race.BindCheckpointCourse(&staticCorpuses_);
+        race.BindVehicle(vehicle);
+        race.PrepareCheckpoints();
     }
     selectedZone = &persistentCollisionZone_;
     return ReplayMapSceneResult::Ready;
