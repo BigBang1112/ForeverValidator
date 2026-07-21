@@ -132,6 +132,54 @@ TMInterface replays use the `tminterface_replay` status and expose
 `replay_file_metadata.replay_provenance` plus `input_ghost_match`; the CLI also
 prints the TMInterface classification to stderr.
 
+### JSON result
+
+Each validated replay produces a `forevervalidator-result-v1` JSON object:
+
+```json5
+{
+  status: "valid",                 // outcome, e.g. wrong_simulation, race_time_mismatch, tminterface_replay
+  validate_result_code: 1,         // 1 valid, 0 invalid, 2 wrong simulation, null if unavailable/errored
+  message: null,                   // human-readable detail for non-valid statuses
+  measured_sample_count: 295,      // ghost samples actually compared
+  expected_sample_count: 295,      // ghost samples expected from the replay
+  max_deviation: 0,                // largest position deviation found
+  max_deviation_time_ms: -1,       // time of the largest deviation, -1 if exact
+  max_deviation_distance: 0,       // distance of the largest deviation
+  compared_exact_ghost_state_count: 295, // samples that matched the ghost state exactly
+  wrong_simulation: false,         // true if the simulated trajectory diverged from the ghost
+  input_ghost_match: "Unavailable",// Unavailable | Match | Mismatch (mainly for TMInterface replays)
+  first_divergence: null,         // first sample where simulation diverged, or null
+  first_exact_deviation: null,     // first sample with any exact-state deviation, or null
+  replay_file_metadata: {          // decoded replay info
+    replay_provenance: "Unmarked", // Unmarked | TMInterface
+    map_environment: "Stadium",
+    vehicle_model: "StadiumCar",
+    play_mode: "Race",
+    expected_stunts_score: null,
+    sample_count: 325,
+    input_duration_ms: 29420,
+    expected_race_time_ms: 29420,
+    expected_respawns: 0,
+    // ...additional decode/sample counters
+  },
+  simulation_outcome: {             // independently simulated result
+    race_completed: true,
+    race_time_ms: 29420,
+    stunts_score: null,
+    respawn_count: 0,
+  },
+  schema: "forevervalidator-result-v1",
+  replay: "/path/to/run.Replay.Gbx", // replay path as passed on the command line
+  valid: true,                       // true only when status is "valid"
+}
+```
+
+Batch runs (`--out-dir`) wrap these per-replay reports in a
+`forevervalidator-batch-v1` summary. Replays that fail to decode or validate
+instead produce a `forevervalidator-error-v1` object with `category`, `code`,
+and `stage` fields describing the failure.
+
 ## Library API
 
 The public API separates portable validation from native file access:
