@@ -1,0 +1,47 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Cache Windows build tools
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.LOCALAPPDATA }}\FV
+          key: windows-build-cache-${{ hashFiles('scripts/build-windows.ps1') }}
+
+      - name: Build ForeverValidator
+        shell: cmd
+        run: build-windows.bat
+
+      - name: Verify published executable
+        shell: pwsh
+        run: |
+          $exe = "dist\forevervalidator.exe"
+          if (-not (Test-Path -LiteralPath $exe)) {
+            throw "Expected build artifact is missing: $exe"
+          }
+          # No arguments: the CLI prints its usage banner and exits 64.
+          # A successful launch (rather than a missing-DLL crash) is what
+          # this check verifies.
+          & $exe
+          if ($LASTEXITCODE -ne 64) {
+            throw "$exe exited with unexpected code $LASTEXITCODE"
+          }
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: forevervalidator-windows
+          path: dist
